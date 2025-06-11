@@ -58,6 +58,57 @@ from huggingface_hub import login
 login(<huggingface write token>)
 ```
 
+## Training
+
+The repository provides a minimal example of **stage‑one pretraining** using
+unpaired image and text collections. Invoke the `musk.pretrain` module with
+either WebDataset shards or a local JSON lines file containing image paths and
+text captions.
+
+Using WebDataset shards:
+
+```shell
+python -m musk.pretrain \
+       --image-data /path/to/images/{0000..0100}.tar \
+       --text-data  /path/to/texts/{0000..0100}.tar \
+       --epochs 5 --output musk_pretrained.pt
+```
+
+Using a JSON lines file:
+
+```shell
+python -m musk.pretrain \
+       --json-data data.jsonl \
+       --epochs 5 --output musk_pretrained.pt
+```
+
+The script automatically loads the built-in `XLMRobertaTokenizer` from
+`musk/models/tokenizer.spm`.
+
+Image shards should contain `jpg`/`png` files while text shards contain `txt`
+files with clinical reports. The script optimizes masked image modeling and
+masked language modeling losses following the MUSK paper and saves the model
+weights to the path specified by `--output`.
+
+When using `--json-data`, each line in the file should have `image` and `text`
+fields as follows:
+
+```json
+{"image": "/path/to/image.jpg", "text": "report or caption"}
+```
+
+Use `musk.json_dataset.get_json_loader` to build separate image and text loaders
+from the same file:
+
+```python
+from musk.json_dataset import get_json_loader
+from transformers import XLMRobertaTokenizer
+
+tokenizer = XLMRobertaTokenizer("musk/models/tokenizer.spm")
+image_loader = get_json_loader("data.jsonl", mode="image", batch_size=64, num_workers=4)
+text_loader = get_json_loader("data.jsonl", mode="text", batch_size=64, num_workers=4)
+```
+
 
 ## Basic Usage: MUSK as a Vision-Language Encoder
 

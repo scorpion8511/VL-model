@@ -121,7 +121,7 @@ def main():
 
     model.train()
     for epoch in range(args.epochs):
-        for (images,), (tokens, padding) in zip(image_loader, text_loader):
+        for images, (tokens, padding) in zip(image_loader, text_loader):
             optimizer.zero_grad()
 
             # ----- Masked Image Modeling -----

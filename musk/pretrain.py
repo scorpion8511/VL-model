@@ -29,6 +29,7 @@ from timm.models import create_model
 from accelerate import Accelerator
 from transformers import XLMRobertaTokenizer
 from .utils import xlm_tokenizer
+from . import modeling  # ensure custom models are registered
 
 
 def get_image_loader(urls, batch_size, num_workers):

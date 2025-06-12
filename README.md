@@ -4,3 +4,28 @@ for device management, so run it with `accelerate launch` to enable multi‑GPU
 training when available.
 accelerate launch -m musk.pretrain \
 accelerate launch -m musk.pretrain \
+
+### Stage-two: Contrastive Pretraining
+
+After stage-one masked modeling, MUSK aligns modalities with a contrastive
+objective on paired image–text data. The repository provides
+`musk.contrastive_pretrain` as a lightweight reference.
+
+Using WebDataset shards of paired samples:
+
+```shell
+accelerate launch -m musk.contrastive_pretrain \
+       --pair-data /path/to/pairs/{0000..0100}.tar \
+       --epochs 20 --output musk_stage2.pt
+```
+
+Using a JSON lines file with `image` and `text` fields:
+
+```shell
+accelerate launch -m musk.contrastive_pretrain \
+       --json-data pairs.jsonl \
+       --epochs 20 --output musk_stage2.pt
+```
+
+The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss
+via a cross-attention decoder and reports both losses every epoch.

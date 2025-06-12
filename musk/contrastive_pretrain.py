@@ -145,13 +145,16 @@ def main():
             tokens = tokens.to(accelerator.device)
             padding = padding.to(accelerator.device)
 
-            # Contrastive loss using CLS embeddings
-            img_emb, txt_emb = model(
-                image=images,
-                text_description=tokens,
-                padding_mask=padding,
-                return_global=True,
-            )
+            # Contrastive loss uses unmasked text. Perform this forward under
+            # ``no_sync`` so DDP does not expect a backward pass before the
+            # second forward pass that computes MLM features.
+            with accelerator.no_sync(model):
+                img_emb, txt_emb = model(
+                    image=images,
+                    text_description=tokens,
+                    padding_mask=padding,
+                    return_global=True,
+                )
             logit_scale = base_model.logit_scale.exp()
             loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 

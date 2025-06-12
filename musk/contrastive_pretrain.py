@@ -159,19 +159,12 @@ def main():
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
-            img_seq, _ = model(
-                image=images,
-                return_global=False,
-                with_head=False,
-                out_norm=False,
-            )
-            _, txt_seq = model(
-                text_description=inp_tokens,
-                padding_mask=padding,
-                return_global=False,
-                with_head=False,
-                out_norm=False,
-            )
+
+            img_seq = base_model.beit3(visual_tokens=images)["encoder_out"][:, 1:]
+            txt_seq = base_model.beit3(
+                textual_tokens=inp_tokens,
+                text_padding_position=padding,
+            )["encoder_out"]
             dec_out = decoder(txt_seq, img_seq, padding.bool())
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])

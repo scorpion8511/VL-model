@@ -19,6 +19,8 @@ Example using a local JSON lines file:
 
 import argparse
 import itertools
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 import torchvision
@@ -82,7 +84,8 @@ def main():
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")
 
-    tokenizer = XLMRobertaTokenizer(str((__file__).replace("pretrain.py", "models/tokenizer.spm")))
+    tokenizer_path = Path(__file__).resolve().with_name("models/tokenizer.spm")
+    tokenizer = XLMRobertaTokenizer(str(tokenizer_path))
     mask_token_id = tokenizer.convert_tokens_to_ids("<mask>")
 
     if args.json_data:

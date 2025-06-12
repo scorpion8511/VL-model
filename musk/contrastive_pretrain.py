@@ -130,6 +130,7 @@ def main():
 
     components = accelerator.prepare(model, decoder, mlm_head, optimizer, scheduler, pair_loader)
     model, decoder, mlm_head, optimizer, scheduler, pair_loader = components
+    base_model = accelerator.unwrap_model(model)
 
     ce_loss = nn.CrossEntropyLoss()
 
@@ -147,14 +148,15 @@ def main():
             # Contrastive loss using CLS embeddings
             img_emb, _ = model(image=images, return_global=True)
             _, txt_emb = model(text_description=tokens, padding_mask=padding, return_global=True)
-            loss_c = clip_loss(img_emb, txt_emb, model.logit_scale.exp())
+            logit_scale = base_model.logit_scale.exp()
+            loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
             # Auxiliary MLM with cross-attention decoder
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
-            img_seq = model.beit3(visual_tokens=images)["encoder_out"]
-            txt_seq = model.beit3(textual_tokens=inp_tokens, text_padding_position=padding)["encoder_out"]
+            img_seq = base_model.beit3(visual_tokens=images)["encoder_out"]
+            txt_seq = base_model.beit3(textual_tokens=inp_tokens, text_padding_position=padding)["encoder_out"]
             dec_out = decoder(txt_seq, img_seq, padding.bool())
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])

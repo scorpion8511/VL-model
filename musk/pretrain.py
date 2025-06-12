@@ -115,6 +115,7 @@ def main():
 
     components = accelerator.prepare(model, img_decoder, txt_decoder, optimizer, image_loader, text_loader)
     model, img_decoder, txt_decoder, optimizer, image_loader, text_loader = components
+    base_model = accelerator.unwrap_model(model)
 
     mse_loss = torch.nn.MSELoss()
     ce_loss = torch.nn.CrossEntropyLoss()
@@ -131,7 +132,7 @@ def main():
             B, _, H, W = images.shape
             num_patches = (H // patch_size) * (W // patch_size)
             mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
-            out = model.beit3(visual_tokens=images, vision_masked_position=mask_img)
+            out = base_model.beit3(visual_tokens=images, vision_masked_position=mask_img)
             img_seq = out["encoder_out"][:, 1:]
             patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
             target = patches[mask_img]
@@ -144,7 +145,7 @@ def main():
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
-            out = model.beit3(textual_tokens=inp_tokens, text_padding_position=padding)
+            out = base_model.beit3(textual_tokens=inp_tokens, text_padding_position=padding)
             txt_seq = out["encoder_out"]
             pred = txt_decoder(txt_seq[mask_txt])
             loss_txt = ce_loss(pred, tokens[mask_txt])

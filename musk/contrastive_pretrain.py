@@ -130,6 +130,7 @@ def main():
 
     components = accelerator.prepare(model, decoder, mlm_head, optimizer, scheduler, pair_loader)
     model, decoder, mlm_head, optimizer, scheduler, pair_loader = components
+    base_model = accelerator.unwrap_model(model)
 
     ce_loss = nn.CrossEntropyLoss()
 
@@ -151,7 +152,7 @@ def main():
                 padding_mask=padding,
                 return_global=True,
             )
-            logit_scale = model.logit_scale.exp()
+            logit_scale = base_model.logit_scale.exp()
             loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
             # Auxiliary MLM with cross-attention decoder
@@ -190,7 +191,7 @@ def main():
 
     if accelerator.is_main_process:
         accelerator.print(f"Saving model to {args.output}")
-        torch.save(model.state_dict(), args.output)
+        torch.save(base_model.state_dict(), args.output)
 
 
 if __name__ == "__main__":

@@ -180,7 +180,7 @@ def main():
 
     if accelerator.is_main_process:
         accelerator.print(f"Saving model to {args.output}")
-        torch.save(model.state_dict(), args.output)
+        torch.save(accelerator.unwrap_model(model).state_dict(), args.output)
 
 
 if __name__ == "__main__":

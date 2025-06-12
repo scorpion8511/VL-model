@@ -29,3 +29,5 @@ accelerate launch -m musk.contrastive_pretrain \
 
 The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss
 via a cross-attention decoder and reports both losses every epoch.
+training when available. The scripts configure DDP with
+`find_unused_parameters=True` to accommodate the two-step loss computation.

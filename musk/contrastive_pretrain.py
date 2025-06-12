@@ -102,7 +102,9 @@ def get_args():
 
 def main():
     args = get_args()
-    accelerator = Accelerator()
+    # ``find_unused_parameters`` avoids reduction errors when some parameters
+    # are used only in the auxiliary MLM path
+    accelerator = Accelerator(ddp_kwargs={"find_unused_parameters": True})
 
     if not args.json_data and not args.pair_data:
         raise ValueError("Provide --json-data or --pair-data")

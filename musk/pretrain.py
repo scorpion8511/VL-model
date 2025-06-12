@@ -75,7 +75,9 @@ def get_args():
 
 def main():
     args = get_args()
-    accelerator = Accelerator()
+    # ``find_unused_parameters`` allows DDP to handle parameters that are only
+    # involved in one of the two masked modeling losses
+    accelerator = Accelerator(ddp_kwargs={"find_unused_parameters": True})
 
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")

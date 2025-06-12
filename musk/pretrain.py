@@ -6,13 +6,13 @@ optimized with masked image modeling (MIM) and masked language modeling (MLM)
 losses.
 
 Example using WebDataset shards:
-    python -m musk.pretrain \
+    accelerate launch -m musk.pretrain \
         --image-data /path/to/images/{0000..0100}.tar \
         --text-data /path/to/texts/{0000..0100}.tar \
         --epochs 5 --output musk_pretrained.pt
 
 Example using a local JSON lines file:
-    python -m musk.pretrain \
+    accelerate launch -m musk.pretrain \
         --json-data /path/to/data.jsonl \
         --epochs 5 --output musk_pretrained.pt
 """
@@ -121,6 +121,9 @@ def main():
 
     model.train()
     for epoch in range(args.epochs):
+        mim_loss_epoch = 0.0
+        mlm_loss_epoch = 0.0
+        num_batches = 0
         for images, (tokens, padding) in zip(image_loader, text_loader):
             optimizer.zero_grad()
 
@@ -150,7 +153,17 @@ def main():
             accelerator.backward(loss)
             optimizer.step()
 
-        accelerator.print(f"Epoch {epoch + 1}: loss={loss.item():.4f}")
+            mim_loss_epoch += loss_img.item()
+            mlm_loss_epoch += loss_txt.item()
+            num_batches += 1
+
+        denom = accelerator.reduce(torch.tensor(num_batches, device=accelerator.device), reduction="sum")
+        mim_total = accelerator.reduce(torch.tensor(mim_loss_epoch, device=accelerator.device), reduction="sum")
+        mlm_total = accelerator.reduce(torch.tensor(mlm_loss_epoch, device=accelerator.device), reduction="sum")
+
+        mim_avg = (mim_total / denom).item()
+        mlm_avg = (mlm_total / denom).item()
+        accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
 
     if accelerator.is_main_process:
         accelerator.print(f"Saving model to {args.output}")

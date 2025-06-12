@@ -137,18 +137,20 @@ def main():
             B, _, H, W = images.shape
             num_patches = (H // patch_size) * (W // patch_size)
             mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
-            _, _, img_seq, _ = model(
-                image=images,
-                vision_mask=mask_img,
-                with_head=False,
-                out_norm=False,
-                return_global=False,
-                return_seq=True,
-            )
-            patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
-            target = patches[mask_img]
-            pred = img_decoder(img_seq[mask_img])
-            loss_img = mse_loss(pred, target)
+            with accelerator.no_sync(model):
+                _, _, img_seq, _ = model(
+                    image=images,
+                    vision_mask=mask_img,
+                    with_head=False,
+                    out_norm=False,
+                    return_global=False,
+                    return_seq=True,
+                )
+                patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
+                target = patches[mask_img]
+                pred = img_decoder(img_seq[mask_img])
+                loss_img = mse_loss(pred, target)
+                accelerator.backward(loss_img)
 
             # ----- Masked Language Modeling -----
             tokens = tokens.to(images.device)
@@ -167,8 +169,7 @@ def main():
             pred = txt_decoder(txt_seq[mask_txt])
             loss_txt = ce_loss(pred, tokens[mask_txt])
 
-            loss = (loss_img + loss_txt) / 2
-            accelerator.backward(loss)
+            accelerator.backward(loss_txt)
             optimizer.step()
 
             mim_loss_epoch += loss_img.item()

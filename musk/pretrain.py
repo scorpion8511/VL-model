@@ -20,6 +20,7 @@ Example using a local JSON lines file:
 import argparse
 import itertools
 from pathlib import Path
+import wandb
 
 import torch
 import torch.nn.functional as F
@@ -73,6 +74,7 @@ def get_args():
     parser.add_argument("--mask-ratio", type=float, default=0.15)
     parser.add_argument("--output", type=str, default="musk.pt")
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--wandb", action="store_true", help="Log metrics to Weights & Biases")
     return parser.parse_args()
 
 
@@ -82,6 +84,10 @@ def main():
     # involved in one of the two masked modeling losses
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+
+    wandb_run = None
+    if args.wandb and accelerator.is_main_process:
+        wandb_run = wandb.init(project="musk-pretrain", config=vars(args))
 
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")
@@ -111,6 +117,8 @@ def main():
 
     model = create_model("musk_large_patch16_384")
     unwrapped = accelerator.unwrap_model(model)
+    if wandb_run:
+        wandb_run.watch(unwrapped, log="all", log_freq=100)
     embed_dim = unwrapped.beit3.args.encoder_embed_dim
     patch_size = unwrapped.beit3.args.patch_size
     img_decoder = torch.nn.Linear(embed_dim, 3 * patch_size * patch_size)
@@ -185,10 +193,14 @@ def main():
         mim_avg = (mim_total / denom).item()
         mlm_avg = (mlm_total / denom).item()
         accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
+        if wandb_run:
+            wandb_run.log({"mim_loss": mim_avg, "mlm_loss": mlm_avg, "epoch": epoch + 1})
 
     if accelerator.is_main_process:
         accelerator.print(f"Saving model to {args.output}")
         torch.save(accelerator.unwrap_model(model).state_dict(), args.output)
+        if wandb_run:
+            wandb_run.finish()
 
 
 if __name__ == "__main__":

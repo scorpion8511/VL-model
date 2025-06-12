@@ -113,7 +113,7 @@ def main():
     if not args.json_data and not args.pair_data:
         raise ValueError("Provide --json-data or --pair-data")
 
-    tokenizer_path = Path(__file__).resolve().with_name("models/tokenizer.spm")
+    tokenizer_path = Path(__file__).resolve().parent / "models" / "tokenizer.spm"
     tokenizer = XLMRobertaTokenizer(str(tokenizer_path))
     mask_token_id = tokenizer.convert_tokens_to_ids("<mask>")
 

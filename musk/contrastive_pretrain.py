@@ -32,6 +32,7 @@ import webdataset as wds
 from timm.models import create_model
 from transformers import XLMRobertaTokenizer
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 
 from .json_dataset import ImageTextJsonDataset
 from .utils import xlm_tokenizer
@@ -106,7 +107,8 @@ def main():
     args = get_args()
     # ``find_unused_parameters`` avoids reduction errors when some parameters
     # are used only in the auxiliary MLM path
-    accelerator = Accelerator(ddp_kwargs={"find_unused_parameters": True})
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
 
     if not args.json_data and not args.pair_data:
         raise ValueError("Provide --json-data or --pair-data")

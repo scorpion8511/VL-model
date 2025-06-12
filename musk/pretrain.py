@@ -29,6 +29,7 @@ import webdataset as wds
 from .json_dataset import get_json_loader
 from timm.models import create_model
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from transformers import XLMRobertaTokenizer
 from .utils import xlm_tokenizer
 from . import modeling  # ensure custom models are registered
@@ -79,7 +80,8 @@ def main():
     args = get_args()
     # ``find_unused_parameters`` allows DDP to handle parameters that are only
     # involved in one of the two masked modeling losses
-    accelerator = Accelerator(ddp_kwargs={"find_unused_parameters": True})
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
 
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")

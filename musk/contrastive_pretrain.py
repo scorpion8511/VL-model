@@ -151,16 +151,14 @@ def main():
             padding = padding.to(accelerator.device)
 
             # ----- Contrastive path -----
-            with accelerator.no_sync(model):
-                img_emb, txt_emb = model(
-                    image=images,
-                    text_description=tokens,
-                    padding_mask=padding,
-                    return_global=True,
-                )
-                logit_scale = base_model.logit_scale.exp()
-                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
-                accelerator.backward(loss_c)
+            img_emb, txt_emb = model(
+                image=images,
+                text_description=tokens,
+                padding_mask=padding,
+                return_global=True,
+            )
+            logit_scale = base_model.logit_scale.exp()
+            loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
             # ----- Auxiliary MLM -----
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
@@ -180,7 +178,7 @@ def main():
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])
 
-            accelerator.backward(loss_mlm)
+            accelerator.backward(loss_c + loss_mlm)
             optimizer.step()
             scheduler.step()
 

@@ -103,8 +103,9 @@ def main():
         text_loader = get_text_loader(args.text_data, tokenizer, args.batch_size, args.num_workers)
 
     model = create_model("musk_large_patch16_384")
-    embed_dim = model.beit3.args.encoder_embed_dim
-    patch_size = model.beit3.args.patch_size
+    unwrapped = accelerator.unwrap_model(model)
+    embed_dim = unwrapped.beit3.args.encoder_embed_dim
+    patch_size = unwrapped.beit3.args.patch_size
     img_decoder = torch.nn.Linear(embed_dim, 3 * patch_size * patch_size)
     txt_decoder = torch.nn.Linear(embed_dim, len(tokenizer))
 
@@ -115,7 +116,6 @@ def main():
 
     components = accelerator.prepare(model, img_decoder, txt_decoder, optimizer, image_loader, text_loader)
     model, img_decoder, txt_decoder, optimizer, image_loader, text_loader = components
-    base_model = accelerator.unwrap_model(model)
 
     mse_loss = torch.nn.MSELoss()
     ce_loss = torch.nn.CrossEntropyLoss()
@@ -132,8 +132,14 @@ def main():
             B, _, H, W = images.shape
             num_patches = (H // patch_size) * (W // patch_size)
             mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
-            out = base_model.beit3(visual_tokens=images, vision_masked_position=mask_img)
-            img_seq = out["encoder_out"][:, 1:]
+            _, _, img_seq, _ = model(
+                image=images,
+                vision_mask=mask_img,
+                with_head=False,
+                out_norm=False,
+                return_global=False,
+                return_seq=True,
+            )
             patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
             target = patches[mask_img]
             pred = img_decoder(img_seq[mask_img])
@@ -145,8 +151,14 @@ def main():
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
-            out = base_model.beit3(textual_tokens=inp_tokens, text_padding_position=padding)
-            txt_seq = out["encoder_out"]
+            _, _, _, txt_seq = model(
+                text_description=inp_tokens,
+                padding_mask=padding,
+                with_head=False,
+                out_norm=False,
+                return_global=False,
+                return_seq=True,
+            )
             pred = txt_decoder(txt_seq[mask_txt])
             loss_txt = ce_loss(pred, tokens[mask_txt])
 

@@ -130,7 +130,6 @@ def main():
 
     components = accelerator.prepare(model, decoder, mlm_head, optimizer, scheduler, pair_loader)
     model, decoder, mlm_head, optimizer, scheduler, pair_loader = components
-    base_model = accelerator.unwrap_model(model)
 
     ce_loss = nn.CrossEntropyLoss()
 
@@ -152,7 +151,7 @@ def main():
                 padding_mask=padding,
                 return_global=True,
             )
-            logit_scale = base_model.logit_scale.exp()
+            logit_scale = model.logit_scale.exp()
             loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
             # Auxiliary MLM with cross-attention decoder
@@ -160,11 +159,15 @@ def main():
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
 
-            img_seq = base_model.beit3(visual_tokens=images)["encoder_out"][:, 1:]
-            txt_seq = base_model.beit3(
-                textual_tokens=inp_tokens,
-                text_padding_position=padding,
-            )["encoder_out"]
+            _, _, img_seq, txt_seq = model(
+                image=images,
+                text_description=inp_tokens,
+                padding_mask=padding,
+                with_head=False,
+                out_norm=False,
+                return_global=False,
+                return_seq=True,
+            )
             dec_out = decoder(txt_seq, img_seq, padding.bool())
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])

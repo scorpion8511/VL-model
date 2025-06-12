@@ -106,17 +106,19 @@ class MUSK(ModelWrapper):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def forward(
-        self, 
-        image: Optional[torch.Tensor] = None, 
-        text_description: Optional[torch.Tensor] = None, 
-        padding_mask: Optional[torch.Tensor] = None, 
-        return_global: bool = True, 
-        with_head: bool = True, 
+        self,
+        image: Optional[torch.Tensor] = None,
+        text_description: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
+        return_global: bool = True,
+        with_head: bool = True,
         out_norm: bool = True,
-        ms_aug: bool = False, 
-        scales: Optional[List[int]] = None, 
-        max_split_size: Optional[int] = None
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        ms_aug: bool = False,
+        scales: Optional[List[int]] = None,
+        max_split_size: Optional[int] = None,
+        vision_mask: Optional[torch.Tensor] = None,
+        return_seq: bool = False,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass for vision-language model.
         Args:
@@ -129,20 +131,25 @@ class MUSK(ModelWrapper):
             ms_aug: Enable multiscale feature augmentation. 
             scales: List of scales for multiscale feature augmentation.
             max_split_size: Maximum split size for multiscale forward.
+            vision_mask: Optional mask for image tokens (MIM).
+            return_seq: Whether to also return patch/token sequences.
 
         Returns:
             vision_cls: Vision embeddings (normalized if out_norm).
             language_cls: Language embeddings (normalized if out_norm).
+            vision_seq: Vision patch embeddings if ``return_seq``.
+            language_seq: Language token embeddings if ``return_seq``.
         """
         if scales is None:
             scales = [1, 2]  # Default scales
 
         # Process image input
         vision_cls = None
+        vision_seq = None
         if image is not None:
             if ms_aug:
                 vision_cls = MultiScaleForward(
-                    model=self, 
+                    model=self,
                     input=image,
                     scales=scales,
                     max_split_size=max_split_size
@@ -150,8 +157,10 @@ class MUSK(ModelWrapper):
                 if with_head:
                     vision_cls = self.vision_head(vision_cls[:, :1024])
             else:
-                outputs = self.beit3(visual_tokens=image)
+                outputs = self.beit3(visual_tokens=image, vision_masked_position=vision_mask)
                 x = outputs["encoder_out"]
+                if return_seq:
+                    vision_seq = x[:, 1:]
                 vision_cls = x[:, 0, :] if return_global else x
                 if with_head:
                     vision_cls = self.vision_head(vision_cls)
@@ -160,18 +169,23 @@ class MUSK(ModelWrapper):
 
         # Process text input
         language_cls = None
+        language_seq = None
         if text_description is not None:
             outputs = self.beit3(
                 textual_tokens=text_description,
                 text_padding_position=padding_mask,
             )
             x = outputs["encoder_out"]
+            if return_seq:
+                language_seq = x
             language_cls = x[:, 0, :] if return_global else x
             if with_head:
                 language_cls = self.language_head(language_cls)
             if out_norm:
                 language_cls = F.normalize(language_cls, dim=-1)
 
+        if return_seq:
+            return vision_cls, language_cls, vision_seq, language_seq
         return vision_cls, language_cls
 
 

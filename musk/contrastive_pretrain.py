@@ -146,8 +146,12 @@ def main():
             padding = padding.to(accelerator.device)
 
             # Contrastive loss using CLS embeddings
-            img_emb, _ = model(image=images, return_global=True)
-            _, txt_emb = model(text_description=tokens, padding_mask=padding, return_global=True)
+            img_emb, txt_emb = model(
+                image=images,
+                text_description=tokens,
+                padding_mask=padding,
+                return_global=True,
+            )
             logit_scale = base_model.logit_scale.exp()
             loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
@@ -155,8 +159,19 @@ def main():
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
-            img_seq = base_model.beit3(visual_tokens=images)["encoder_out"]
-            txt_seq = base_model.beit3(textual_tokens=inp_tokens, text_padding_position=padding)["encoder_out"]
+            img_seq, _ = model(
+                image=images,
+                return_global=False,
+                with_head=False,
+                out_norm=False,
+            )
+            _, txt_seq = model(
+                text_description=inp_tokens,
+                padding_mask=padding,
+                return_global=False,
+                with_head=False,
+                out_norm=False,
+            )
             dec_out = decoder(txt_seq, img_seq, padding.bool())
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])

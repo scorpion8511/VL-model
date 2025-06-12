@@ -150,9 +150,7 @@ def main():
             tokens = tokens.to(accelerator.device)
             padding = padding.to(accelerator.device)
 
-            # Contrastive loss uses unmasked text. Perform this forward under
-            # ``no_sync`` so DDP does not expect a backward pass before the
-            # second forward pass that computes MLM features.
+            # ----- Contrastive path -----
             with accelerator.no_sync(model):
                 img_emb, txt_emb = model(
                     image=images,
@@ -160,10 +158,11 @@ def main():
                     padding_mask=padding,
                     return_global=True,
                 )
-            logit_scale = base_model.logit_scale.exp()
-            loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                logit_scale = base_model.logit_scale.exp()
+                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                accelerator.backward(loss_c)
 
-            # Auxiliary MLM with cross-attention decoder
+            # ----- Auxiliary MLM -----
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
@@ -181,8 +180,7 @@ def main():
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])
 
-            loss = loss_c + loss_mlm
-            accelerator.backward(loss)
+            accelerator.backward(loss_mlm)
             optimizer.step()
             scheduler.step()
 

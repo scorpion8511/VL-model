@@ -39,3 +39,7 @@ Optionally specify `--encoder-out` to save only the shared encoder weights for
 use in stage-two contrastive pretraining.
        --encoder musk_pretrained_encoder.pt \
        --encoder musk_pretrained_encoder.pt \
+accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
+       --batch-size 16 --epochs 20 --output musk_stage2.pt
+accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
+       --batch-size 16 --epochs 20 --output musk_stage2.pt

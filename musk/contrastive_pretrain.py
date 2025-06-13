@@ -7,14 +7,14 @@ WebDataset shards or a JSON lines file containing paired image paths
 and text captions. Use ``accelerate launch`` for multi-GPU training.
 
 Example using WebDataset shards:
-    accelerate launch -m musk.contrastive_pretrain \
+    accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
         --pair-data /path/to/pairs/{0000..0100}.tar \
-        --epochs 20 --output musk_stage2.pt
+        --batch-size 16 --epochs 20 --output musk_stage2.pt
 
 Example using a JSON lines file:
-    accelerate launch -m musk.contrastive_pretrain \
+    accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
         --json-data pairs.jsonl \
-        --epochs 20 --output musk_stage2.pt
+        --batch-size 16 --epochs 20 --output musk_stage2.pt
 """
 
 from __future__ import annotations
@@ -95,7 +95,9 @@ def get_args():
     p.add_argument("--pair-data", type=str, help="WebDataset pattern with paired image-text shards")
     p.add_argument("--json-data", type=str, help="JSON lines file with paired samples")
     p.add_argument("--epochs", type=int, default=20)
-    p.add_argument("--batch-size", type=int, default=64)
+    # large batches can easily exceed GPU memory when training the
+    # 384x384 MUSK model; use a conservative default
+    p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--mask-ratio", type=float, default=0.3)
     p.add_argument("--output", type=str, default="musk_stage2.pt")

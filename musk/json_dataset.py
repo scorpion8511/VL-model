@@ -88,3 +88,21 @@ def get_json_loader(
 ) -> DataLoader:
     dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer)
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
+
+
+def get_json_loaders(
+    json_file: str,
+    mode: str,
+    batch_size: int,
+    num_workers: int,
+    tokenizer: PreTrainedTokenizer | None = None,
+    val_split: float = 0.1,
+) -> tuple[DataLoader, DataLoader]:
+    """Return training and validation loaders split from a JSON lines dataset."""
+    dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer)
+    n_val = max(1, int(len(dataset) * val_split))
+    n_train = len(dataset) - n_val
+    train_set, val_set = torch.utils.data.random_split(dataset, [n_train, n_val])
+    train_loader = DataLoader(train_set, batch_size=batch_size, num_workers=num_workers, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, num_workers=num_workers)
+    return train_loader, val_loader

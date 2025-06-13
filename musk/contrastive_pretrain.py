@@ -15,6 +15,10 @@ Example using a JSON lines file:
     accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
         --json-data pairs.jsonl \
         --batch-size 16 --epochs 20 --output musk_stage2.pt
+
+When ``--json-data`` is supplied, the loader reserves 10% of the pairs for
+validation and both contrastive and MLM losses are reported on the validation
+split each epoch.
 """
 
 from __future__ import annotations
@@ -66,6 +70,22 @@ def get_pair_loader(urls: str, tokenizer: XLMRobertaTokenizer, batch_size: int, 
 def get_json_pair_loader(json_file: str, tokenizer: XLMRobertaTokenizer, batch_size: int, num_workers: int) -> DataLoader:
     dataset = ImageTextJsonDataset(json_file, mode="pair", tokenizer=tokenizer)
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
+
+
+def get_json_pair_loaders(
+    json_file: str,
+    tokenizer: XLMRobertaTokenizer,
+    batch_size: int,
+    num_workers: int,
+    val_split: float = 0.1,
+) -> tuple[DataLoader, DataLoader]:
+    dataset = ImageTextJsonDataset(json_file, mode="pair", tokenizer=tokenizer)
+    n_val = max(1, int(len(dataset) * val_split))
+    n_train = len(dataset) - n_val
+    train_set, val_set = torch.utils.data.random_split(dataset, [n_train, n_val])
+    train_loader = DataLoader(train_set, batch_size=batch_size, num_workers=num_workers, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, num_workers=num_workers)
+    return train_loader, val_loader
 
 
 def random_mask(shape, ratio, device):
@@ -126,9 +146,18 @@ def main():
     mask_token_id = tokenizer.convert_tokens_to_ids("<mask>")
 
     if args.json_data:
-        pair_loader = get_json_pair_loader(args.json_data, tokenizer, args.batch_size, args.num_workers)
+        (
+            pair_loader,
+            val_loader,
+        ) = get_json_pair_loaders(
+            args.json_data,
+            tokenizer,
+            args.batch_size,
+            args.num_workers,
+        )
     else:
         pair_loader = get_pair_loader(args.pair_data, tokenizer, args.batch_size, args.num_workers)
+        val_loader = None
 
     model = create_model("musk_large_patch16_384")
     if args.encoder:
@@ -151,6 +180,8 @@ def main():
 
     components = accelerator.prepare(model, decoder, mlm_head, optimizer, scheduler, pair_loader)
     model, decoder, mlm_head, optimizer, scheduler, pair_loader = components
+    if val_loader is not None:
+        val_loader = accelerator.prepare(val_loader)
     base_model = accelerator.unwrap_model(model)
 
     ce_loss = nn.CrossEntropyLoss()
@@ -207,9 +238,62 @@ def main():
         denom = accelerator.reduce(torch.tensor(num_batches, device=accelerator.device), reduction="sum")
         contrast_total = accelerator.reduce(torch.tensor(loss_epoch, device=accelerator.device), reduction="sum")
         mlm_total = accelerator.reduce(torch.tensor(mlm_epoch, device=accelerator.device), reduction="sum")
-        accelerator.print(
-            f"Epoch {epoch + 1}: Contrastive={contrast_total / denom:.4f} MLM={mlm_total / denom:.4f}"
-        )
+
+        c_avg = (contrast_total / denom).item()
+        mlm_avg = (mlm_total / denom).item()
+
+        if val_loader is not None:
+            val_c = 0.0
+            val_mlm = 0.0
+            val_batches = 0
+            for images, tokens, padding in val_loader:
+                images = images.to(accelerator.device)
+                tokens = tokens.to(accelerator.device)
+                padding = padding.to(accelerator.device)
+
+                with torch.no_grad():
+                    img_emb, txt_emb = model(
+                        image=images,
+                        text_description=tokens,
+                        padding_mask=padding,
+                        return_global=True,
+                    )
+                logit_scale = base_model.logit_scale.exp()
+                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+
+                mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
+                inp_tokens = tokens.clone()
+                inp_tokens[mask_txt] = mask_token_id
+                with torch.no_grad():
+                    _, _, img_seq, txt_seq = model(
+                        image=images,
+                        text_description=inp_tokens,
+                        padding_mask=padding,
+                        with_head=False,
+                        out_norm=False,
+                        return_global=False,
+                        return_seq=True,
+                    )
+                    dec_out = decoder(txt_seq, img_seq, padding.bool())
+                    pred = mlm_head(dec_out[mask_txt])
+                    loss_mlm = ce_loss(pred, tokens[mask_txt])
+
+                val_c += loss_c.item()
+                val_mlm += loss_mlm.item()
+                val_batches += 1
+
+            val_denom = accelerator.reduce(torch.tensor(val_batches, device=accelerator.device), reduction="sum")
+            val_c_total = accelerator.reduce(torch.tensor(val_c, device=accelerator.device), reduction="sum")
+            val_mlm_total = accelerator.reduce(torch.tensor(val_mlm, device=accelerator.device), reduction="sum")
+            c_val_avg = (val_c_total / val_denom).item()
+            mlm_val_avg = (val_mlm_total / val_denom).item()
+            accelerator.print(
+                f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f} Val_Contrastive={c_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
+            )
+        else:
+            accelerator.print(
+                f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}"
+            )
 
     if accelerator.is_main_process:
         accelerator.print(f"Saving model to {args.output}")

@@ -15,6 +15,9 @@ Example using a local JSON lines file:
     accelerate launch -m musk.pretrain \
         --json-data /path/to/data.jsonl \
         --epochs 5 --output musk_pretrained.pt
+
+When a JSON file is provided, 10% of the samples are automatically used for
+validation and the script reports MIM and MLM losses on the validation split.
 """
 
 import argparse
@@ -26,7 +29,7 @@ import torch.nn.functional as F
 import torchvision
 from torch.utils.data import DataLoader
 import webdataset as wds
-from .json_dataset import get_json_loader
+from .json_dataset import get_json_loader, get_json_loaders
 from timm.models import create_model
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
@@ -97,14 +100,20 @@ def main():
     mask_token_id = tokenizer.convert_tokens_to_ids("<mask>")
 
     if args.json_data:
-        image_loader = get_json_loader(
+        (
+            image_loader,
+            val_image_loader,
+        ) = get_json_loaders(
             args.json_data,
             mode="image",
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             tokenizer=None,
         )
-        text_loader = get_json_loader(
+        (
+            text_loader,
+            val_text_loader,
+        ) = get_json_loaders(
             args.json_data,
             mode="text",
             batch_size=args.batch_size,
@@ -114,6 +123,8 @@ def main():
     else:
         image_loader = get_image_loader(args.image_data, args.batch_size, args.num_workers)
         text_loader = get_text_loader(args.text_data, tokenizer, args.batch_size, args.num_workers)
+        val_image_loader = None
+        val_text_loader = None
 
     model = create_model("musk_large_patch16_384")
     unwrapped = accelerator.unwrap_model(model)
@@ -127,8 +138,13 @@ def main():
         lr=args.lr,
     )
 
-    components = accelerator.prepare(model, img_decoder, txt_decoder, optimizer, image_loader, text_loader)
+    components = accelerator.prepare(
+        model, img_decoder, txt_decoder, optimizer, image_loader, text_loader
+    )
     model, img_decoder, txt_decoder, optimizer, image_loader, text_loader = components
+    if val_image_loader is not None:
+        val_image_loader = accelerator.prepare(val_image_loader)
+        val_text_loader = accelerator.prepare(val_text_loader)
 
     mse_loss = torch.nn.MSELoss()
     ce_loss = torch.nn.CrossEntropyLoss()
@@ -190,7 +206,60 @@ def main():
 
         mim_avg = (mim_total / denom).item()
         mlm_avg = (mlm_total / denom).item()
-        accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
+
+        if val_image_loader is not None:
+            val_mim = 0.0
+            val_mlm = 0.0
+            val_batches = 0
+            for images, (tokens, padding) in zip(val_image_loader, val_text_loader):
+                B, _, H, W = images.shape
+                num_patches = (H // patch_size) * (W // patch_size)
+                mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
+                with torch.no_grad():
+                    _, _, img_seq, _ = model(
+                        image=images,
+                        vision_mask=mask_img,
+                        with_head=False,
+                        out_norm=False,
+                        return_global=False,
+                        return_seq=True,
+                    )
+                patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
+                target = patches[mask_img]
+                pred = img_decoder(img_seq[mask_img])
+                loss_img = mse_loss(pred, target)
+
+                tokens = tokens.to(images.device)
+                padding = padding.to(images.device)
+                mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
+                inp_tokens = tokens.clone()
+                inp_tokens[mask_txt] = mask_token_id
+                with torch.no_grad():
+                    _, _, _, txt_seq = model(
+                        text_description=inp_tokens,
+                        padding_mask=padding,
+                        with_head=False,
+                        out_norm=False,
+                        return_global=False,
+                        return_seq=True,
+                    )
+                pred_txt = txt_decoder(txt_seq[mask_txt])
+                loss_txt = ce_loss(pred_txt, tokens[mask_txt])
+
+                val_mim += loss_img.item()
+                val_mlm += loss_txt.item()
+                val_batches += 1
+
+            val_denom = accelerator.reduce(torch.tensor(val_batches, device=accelerator.device), reduction="sum")
+            val_mim_total = accelerator.reduce(torch.tensor(val_mim, device=accelerator.device), reduction="sum")
+            val_mlm_total = accelerator.reduce(torch.tensor(val_mlm, device=accelerator.device), reduction="sum")
+            mim_val_avg = (val_mim_total / val_denom).item()
+            mlm_val_avg = (val_mlm_total / val_denom).item()
+            accelerator.print(
+                f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f} Val_MIM={mim_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
+            )
+        else:
+            accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
 
     if accelerator.is_main_process:
         base_model = accelerator.unwrap_model(model)

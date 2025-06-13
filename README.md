@@ -1,12 +1,4 @@
 
-text captions. The script uses [HuggingFace Accelerate](https://github.com/huggingface/accelerate)
-for device management, so run it with `accelerate launch` to enable multi‑GPU
-training when available.
-accelerate launch -m musk.pretrain \
-accelerate launch -m musk.pretrain \
-
-### Stage-two: Contrastive Pretraining
-
 After stage-one masked modeling, MUSK aligns modalities with a contrastive
 objective on paired image–text data. The repository provides
 `musk.contrastive_pretrain` as a lightweight reference.
@@ -43,3 +35,12 @@ accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
        --batch-size 16 --epochs 20 --output musk_stage2.pt
 accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
        --batch-size 16 --epochs 20 --output musk_stage2.pt
+When a JSON file is used, the loader automatically reserves 10% of the samples
+for validation and reports average MIM and MLM losses on this split each epoch.
+
+Use `musk.json_dataset.get_json_loaders` to obtain training and validation loaders from the same file:
+from musk.json_dataset import get_json_loaders
+train_img_loader, val_img_loader = get_json_loaders("data.jsonl", mode="image", batch_size=64, num_workers=4)
+train_txt_loader, val_txt_loader = get_json_loaders("data.jsonl", mode="text", batch_size=64, num_workers=4, tokenizer=tokenizer)
+When `--json-data` is specified, 10% of the pairs are held out for validation
+and the script prints contrastive and MLM losses for both splits each epoch.

@@ -72,6 +72,12 @@ def get_args():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--mask-ratio", type=float, default=0.15)
     parser.add_argument("--output", type=str, default="musk.pt")
+    parser.add_argument(
+        "--encoder-out",
+        type=str,
+        default=None,
+        help="Optional path to save only the encoder weights for stage-two training",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     return parser.parse_args()
 
@@ -187,8 +193,12 @@ def main():
         accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
 
     if accelerator.is_main_process:
+        base_model = accelerator.unwrap_model(model)
         accelerator.print(f"Saving model to {args.output}")
-        torch.save(accelerator.unwrap_model(model).state_dict(), args.output)
+        torch.save(base_model.state_dict(), args.output)
+        if args.encoder_out:
+            accelerator.print(f"Saving encoder weights to {args.encoder_out}")
+            torch.save(base_model.beit3.state_dict(), args.encoder_out)
 
 
 if __name__ == "__main__":

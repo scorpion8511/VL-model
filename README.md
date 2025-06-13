@@ -31,3 +31,11 @@ The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss
 via a cross-attention decoder and reports both losses every epoch.
 training when available. The scripts configure DDP with
 `find_unused_parameters=True` to accommodate the two-step loss computation.
+       --epochs 5 --output musk_pretrained.pt \
+       --encoder-out musk_pretrained_encoder.pt
+       --epochs 5 --output musk_pretrained.pt \
+       --encoder-out musk_pretrained_encoder.pt
+Optionally specify `--encoder-out` to save only the shared encoder weights for
+use in stage-two contrastive pretraining.
+       --encoder musk_pretrained_encoder.pt \
+       --encoder musk_pretrained_encoder.pt \

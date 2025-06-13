@@ -99,6 +99,12 @@ def get_args():
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--mask-ratio", type=float, default=0.3)
     p.add_argument("--output", type=str, default="musk_stage2.pt")
+    p.add_argument(
+        "--encoder",
+        type=str,
+        default=None,
+        help="Path to encoder weights pretrained in stage one",
+    )
     p.add_argument("--num-workers", type=int, default=4)
     return p.parse_args()
 
@@ -123,6 +129,12 @@ def main():
         pair_loader = get_pair_loader(args.pair_data, tokenizer, args.batch_size, args.num_workers)
 
     model = create_model("musk_large_patch16_384")
+    if args.encoder:
+        state = torch.load(args.encoder, map_location="cpu")
+        missing = model.beit3.load_state_dict(state, strict=False)
+        accelerator.print(f"Loaded encoder weights from {args.encoder}")
+        if missing.missing_keys:
+            accelerator.print(f"Missing keys in encoder load: {missing.missing_keys}")
     embed_dim = model.beit3.args.encoder_embed_dim
     decoder = CrossAttentionDecoder(embed_dim)
     mlm_head = nn.Linear(embed_dim, len(tokenizer))

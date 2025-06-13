@@ -37,6 +37,7 @@ from timm.models import create_model
 from transformers import XLMRobertaTokenizer
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
+import wandb
 
 from .json_dataset import ImageTextJsonDataset
 from .utils import xlm_tokenizer
@@ -122,6 +123,12 @@ def get_args():
     p.add_argument("--mask-ratio", type=float, default=0.3)
     p.add_argument("--output", type=str, default="musk_stage2.pt")
     p.add_argument(
+        "--wandb-project",
+        type=str,
+        default=None,
+        help="Optional Weights & Biases project for logging",
+    )
+    p.add_argument(
         "--encoder",
         type=str,
         default=None,
@@ -137,6 +144,9 @@ def main():
     # are used only in the auxiliary MLM path
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+    run = None
+    if args.wandb_project and accelerator.is_main_process:
+        run = wandb.init(project=args.wandb_project)
 
     if not args.json_data and not args.pair_data:
         raise ValueError("Provide --json-data or --pair-data")
@@ -290,14 +300,34 @@ def main():
             accelerator.print(
                 f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f} Val_Contrastive={c_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
             )
+            if run:
+                run.log(
+                    {
+                        "epoch": epoch + 1,
+                        "train_contrastive": c_avg,
+                        "train_mlm": mlm_avg,
+                        "val_contrastive": c_val_avg,
+                        "val_mlm": mlm_val_avg,
+                    }
+                )
         else:
             accelerator.print(
                 f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}"
             )
+            if run:
+                run.log(
+                    {
+                        "epoch": epoch + 1,
+                        "train_contrastive": c_avg,
+                        "train_mlm": mlm_avg,
+                    }
+                )
 
     if accelerator.is_main_process:
         accelerator.print(f"Saving model to {args.output}")
         torch.save(base_model.state_dict(), args.output)
+        if run:
+            run.finish()
 
 
 if __name__ == "__main__":

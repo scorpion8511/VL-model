@@ -23,6 +23,7 @@ validation and the script reports MIM and MLM losses on the validation split.
 import argparse
 import itertools
 from pathlib import Path
+import wandb
 
 import torch
 import torch.nn.functional as F
@@ -76,6 +77,12 @@ def get_args():
     parser.add_argument("--mask-ratio", type=float, default=0.15)
     parser.add_argument("--output", type=str, default="musk.pt")
     parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default=None,
+        help="Optional Weights & Biases project for logging",
+    )
+    parser.add_argument(
         "--encoder-out",
         type=str,
         default=None,
@@ -91,6 +98,9 @@ def main():
     # involved in one of the two masked modeling losses
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+    run = None
+    if args.wandb_project and accelerator.is_main_process:
+        run = wandb.init(project=args.wandb_project)
 
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")
@@ -258,8 +268,26 @@ def main():
             accelerator.print(
                 f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f} Val_MIM={mim_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
             )
+            if run:
+                run.log(
+                    {
+                        "epoch": epoch + 1,
+                        "train_mim": mim_avg,
+                        "train_mlm": mlm_avg,
+                        "val_mim": mim_val_avg,
+                        "val_mlm": mlm_val_avg,
+                    }
+                )
         else:
             accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
+            if run:
+                run.log(
+                    {
+                        "epoch": epoch + 1,
+                        "train_mim": mim_avg,
+                        "train_mlm": mlm_avg,
+                    }
+                )
 
     if accelerator.is_main_process:
         base_model = accelerator.unwrap_model(model)
@@ -268,6 +296,8 @@ def main():
         if args.encoder_out:
             accelerator.print(f"Saving encoder weights to {args.encoder_out}")
             torch.save(base_model.beit3.state_dict(), args.encoder_out)
+        if run:
+            run.finish()
 
 
 if __name__ == "__main__":

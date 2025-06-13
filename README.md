@@ -44,3 +44,6 @@ train_img_loader, val_img_loader = get_json_loaders("data.jsonl", mode="image", 
 train_txt_loader, val_txt_loader = get_json_loaders("data.jsonl", mode="text", batch_size=64, num_workers=4, tokenizer=tokenizer)
 When `--json-data` is specified, 10% of the pairs are held out for validation
 and the script prints contrastive and MLM losses for both splits each epoch.
+`musk/models/tokenizer.spm`. Pass `--wandb-project <name>` to log
+training metrics to Weights & Biases.
+Specify `--wandb-project <name>` to log these metrics to Weights & Biases.

@@ -4,20 +4,12 @@
 
 ![header](https://capsule-render.vercel.app/api?type=soft&height=80&color=timeGradient&text=MUSK:%20A%20Vision-Language%20Foundation%20Model%20for%20Precision%20Oncology&fontSize=25)
 
-(Nature 2025)
 
 [Jinxi Xiang](https://jinxixiang.com/)‡, Xiyue Wang‡, Xiaoming Zhang, Yinghua Xi, Feyisope Eweje, Yijiang Chen, Yuchen
 Li, Colin Bergstrom, Matthew Gopaulchan, Ted Kim, Kun-Hsing Yu, Sierra Willens, Francesca Maria
 Olguin, Jeffrey J. Nirschl, Joel Neal, Maximilian Diehn, Sen Yang<sup>+</sup>, [Ruijiang Li](https://med.stanford.edu/lilab.html)<sup>+</sup> (‡Equal Contribution)
 
 _Lead Contact_: Ruijiang Li, Ph.D.
-
-Stanford University, Harvard University
-
------
-
-
-<img src="MUSK.png" width="300px" align="right" />
 
 We develop **M**ultimodal transformer with **U**nified ma**SK** modeling (MUSK), a vision-language foundation model designed to leverage large-scale, unlabeled, unpaired image-text data. MUSK is pre-trained on 50 million pathology images and 1 billion pathology-related text tokens using unified masked modeling.  MUSK achieves superior performance across 23 patch-level and slide-level benchmarks, including cross-modal retrieval, visual question answering, and image classification. Importantly, MUSK shows promising performance in outcome prediction, including melanoma relapse prediction, pan-cancer prognosis prediction, and immunotherapy response prediction in lung and gastro-esophageal cancers. MUSK effectively combines complementary information from pathology images and clinical reports and can potentially improve diagnosis and precision cancer therapy.
 
@@ -57,6 +49,94 @@ You need to agree to the terms to access the models and login with your HuggingF
 from huggingface_hub import login
 login(<huggingface write token>)
 ```
+
+## Training
+
+The repository provides a minimal example of **stage‑one pretraining** using
+unpaired image and text collections. Invoke the `musk.pretrain` module with
+either WebDataset shards or a local JSON lines file containing image paths and
+text captions. The script uses [HuggingFace Accelerate](https://github.com/huggingface/accelerate)
+for device management, so run it with `accelerate launch` to enable multi‑GPU
+training when available. The scripts configure DDP with
+`find_unused_parameters=True` to accommodate the two-step loss computation.
+
+Using WebDataset shards:
+
+```shell
+accelerate launch -m musk.pretrain \
+       --image-data /path/to/images/{0000..0100}.tar \
+       --text-data  /path/to/texts/{0000..0100}.tar \
+       --epochs 5 --output musk_pretrained.pt \
+       --encoder-out musk_pretrained_encoder.pt
+```
+
+Using a JSON lines file:
+
+```shell
+accelerate launch -m musk.pretrain \
+       --json-data data.jsonl \
+       --epochs 5 --output musk_pretrained.pt \
+       --encoder-out musk_pretrained_encoder.pt
+```
+The script automatically loads the built-in `XLMRobertaTokenizer` from
+`musk/models/tokenizer.spm`. Pass `--wandb-project <name>` to log
+training metrics to Weights & Biases.
+
+When a JSON file is used, the loader automatically reserves 10% of the samples
+for validation and reports average MIM and MLM losses on this split each epoch.
+
+Image shards should contain `jpg`/`png` files while text shards contain `txt`
+files with clinical reports. The script optimizes masked image modeling and
+masked language modeling losses following the MUSK paper and saves the model
+weights to the path specified by `--output`.
+Optionally specify `--encoder-out` to save only the shared encoder weights for
+use in stage-two contrastive pretraining.
+
+When using `--json-data`, each line in the file should have `image` and `text`
+fields as follows:
+
+```json
+{"image": "/path/to/image.jpg", "text": "report or caption"}
+```
+
+Use `musk.json_dataset.get_json_loaders` to obtain training and validation loaders from the same file:
+```python
+from musk.json_dataset import get_json_loaders
+from transformers import XLMRobertaTokenizer
+
+tokenizer = XLMRobertaTokenizer("musk/models/tokenizer.spm")
+train_img_loader, val_img_loader = get_json_loaders("data.jsonl", mode="image", batch_size=64, num_workers=4)
+train_txt_loader, val_txt_loader = get_json_loaders("data.jsonl", mode="text", batch_size=64, num_workers=4, tokenizer=tokenizer)
+```
+
+### Stage-two: Contrastive Pretraining
+
+After stage-one masked modeling, MUSK aligns modalities with a contrastive
+objective on paired image–text data. The repository provides
+`musk.contrastive_pretrain` as a lightweight reference.
+
+Using WebDataset shards of paired samples:
+
+```shell
+accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
+       --pair-data /path/to/pairs/{0000..0100}.tar \
+       --encoder musk_pretrained_encoder.pt \
+       --batch-size 16 --epochs 20 --output musk_stage2.pt
+```
+
+Using a JSON lines file with `image` and `text` fields:
+
+```shell
+accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
+       --json-data pairs.jsonl \
+       --encoder musk_pretrained_encoder.pt \
+       --batch-size 16 --epochs 20 --output musk_stage2.pt
+```
+The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss
+via a cross-attention decoder and reports both losses every epoch.
+When `--json-data` is specified, 10% of the pairs are held out for validation
+and the script prints contrastive and MLM losses for both splits each epoch.
+Specify `--wandb-project <name>` to log these metrics to Weights & Biases.
 
 
 ## Basic Usage: MUSK as a Vision-Language Encoder

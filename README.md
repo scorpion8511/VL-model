@@ -14,7 +14,14 @@ Both scripts create a `MultiModalAdapter` and insert it into the MUSK model befo
 Run the first stage with `accelerate`:
 
 ```bash
-accelerate launch musk/contrastive_pretrain.py
+accelerate launch musk/contrastive_pretrain.py --train-json train.json --wandb
 ```
 
-This command will start a dummy MMA-based training run using randomly generated data. It serves as a template for real datasets and training configurations.
+This command will start a simple MMA-based training run using a JSON lines dataset of image/text pairs.
+
+The second stage continues training from a Stage 1 checkpoint:
+
+```bash
+accelerate launch musk/mma_stage2.py --train-json train.json \
+    --pretrained stage1.ckpt --wandb
+```

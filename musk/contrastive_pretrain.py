@@ -44,6 +44,23 @@ from .utils import xlm_tokenizer
 from . import modeling  # register MUSK models
 
 
+class MLPAdapter(nn.Module):
+    """Simple bottleneck adapter inspired by ``m_adaptor.AdapterLearner``."""
+
+    def __init__(self, d_model: int, mid_dim: int = 256, scale: float = 1.0):
+        super().__init__()
+        self.down = nn.Linear(d_model, mid_dim)
+        self.relu = nn.ReLU()
+        self.up = nn.Linear(mid_dim, d_model)
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.down(x)
+        y = self.relu(y)
+        y = self.up(y)
+        return x + self.scale * y
+
+
 def get_pair_loader(urls: str, tokenizer: XLMRobertaTokenizer, batch_size: int, num_workers: int) -> DataLoader:
     transform = torchvision.transforms.Compose([
         torchvision.transforms.Resize(384, interpolation=3, antialias=True),
@@ -135,6 +152,23 @@ def get_args():
         help="Path to encoder weights pretrained in stage one",
     )
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument(
+        "--use-adapter",
+        action="store_true",
+        help="Apply bottleneck adapters to image and text embeddings",
+    )
+    p.add_argument(
+        "--adapter-dim",
+        type=int,
+        default=256,
+        help="Hidden dimension of the adapter MLP",
+    )
+    p.add_argument(
+        "--adapter-scale",
+        type=float,
+        default=1.0,
+        help="Residual scaling applied to adapter output",
+    )
     return p.parse_args()
 
 
@@ -180,16 +214,47 @@ def main():
     decoder = CrossAttentionDecoder(embed_dim)
     mlm_head = nn.Linear(embed_dim, len(tokenizer))
 
+    if args.use_adapter:
+        img_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
+        txt_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
+    else:
+        img_adapter = nn.Identity()
+        txt_adapter = nn.Identity()
+
     optimizer = torch.optim.AdamW(
-        itertools.chain(model.parameters(), decoder.parameters(), mlm_head.parameters()),
+        itertools.chain(
+            model.parameters(),
+            decoder.parameters(),
+            mlm_head.parameters(),
+            img_adapter.parameters(),
+            txt_adapter.parameters(),
+        ),
         lr=args.lr,
         betas=(0.9, 0.95),
         weight_decay=0.05,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(pair_loader))
 
-    components = accelerator.prepare(model, decoder, mlm_head, optimizer, scheduler, pair_loader)
-    model, decoder, mlm_head, optimizer, scheduler, pair_loader = components
+    components = accelerator.prepare(
+        model,
+        decoder,
+        mlm_head,
+        img_adapter,
+        txt_adapter,
+        optimizer,
+        scheduler,
+        pair_loader,
+    )
+    (
+        model,
+        decoder,
+        mlm_head,
+        img_adapter,
+        txt_adapter,
+        optimizer,
+        scheduler,
+        pair_loader,
+    ) = components
     if val_loader is not None:
         val_loader = accelerator.prepare(val_loader)
     base_model = accelerator.unwrap_model(model)
@@ -215,6 +280,8 @@ def main():
                     padding_mask=padding,
                     return_global=True,
                 )
+                img_emb = img_adapter(img_emb)
+                txt_emb = txt_adapter(txt_emb)
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
                 accelerator.backward(loss_c)
@@ -268,6 +335,8 @@ def main():
                         padding_mask=padding,
                         return_global=True,
                     )
+                    img_emb = img_adapter(img_emb)
+                    txt_emb = txt_adapter(txt_emb)
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 

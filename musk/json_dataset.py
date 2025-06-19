@@ -23,10 +23,29 @@ def default_transform(image_size: int = 224):
 
 
 class JsonDataset(Dataset):
-    """Dataset reading image-text pairs from a JSON lines file."""
+    """Dataset reading image-caption entries from a JSON lines file.
+
+    Each line should contain an ``image`` path and either a single ``text``
+    string or a list of ``captions``.  When multiple captions are present the
+    image will be repeated once for each caption.
+    """
 
     def __init__(self, json_path: str, transform=None, tokenizer=None, max_length: int = 32):
-        self.items = [json.loads(line) for line in open(json_path, "r")]
+        raw_items = [json.loads(line) for line in open(json_path, "r")]
+        self.items = []
+        for obj in raw_items:
+            captions = []
+            if "text" in obj:
+                if isinstance(obj["text"], list):
+                    captions = obj["text"]
+                else:
+                    captions = [obj["text"]]
+            elif "captions" in obj:
+                captions = obj["captions"]
+            else:
+                raise KeyError("JSON entry must contain 'text' or 'captions'")
+            for cap in captions:
+                self.items.append({"image": obj["image"], "text": cap})
         self.transform = transform or default_transform()
         self.tokenizer = tokenizer or SimpleTokenizer()
         self.max_length = max_length

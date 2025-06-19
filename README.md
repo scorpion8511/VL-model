@@ -11,6 +11,9 @@ Two example training scripts are provided:
 
 Both scripts create a `MultiModalAdapter` and insert it into the MUSK model before the training loop.
 
+Training data is expected in a JSON lines format with `image` and `text` fields.
+The loader implementation is provided in `musk/json_dataset.py`.
+
 Run the first stage with `accelerate`:
 
 ```bash

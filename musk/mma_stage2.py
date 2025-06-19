@@ -8,7 +8,7 @@ import wandb
 
 from musk.modeling import musk_large_patch16_384
 from musk.mmadapter import MultiModalAdapter
-from musk.data import JsonDataset
+from musk.json_dataset import JsonDataset
 from musk.utils import load_model_and_may_interpolate
 
 

@@ -7,7 +7,7 @@ import wandb
 
 from musk.modeling import musk_large_patch16_384
 from musk.mmadapter import MultiModalAdapter
-from musk.data import JsonDataset
+from musk.json_dataset import JsonDataset
 
 
 def parse_args():

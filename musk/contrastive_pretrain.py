@@ -266,8 +266,11 @@ def main():
 
     ce_loss = nn.CrossEntropyLoss()
 
-    model.train()
     for epoch in range(args.epochs):
+        model.train()
+        adapter.train()
+        decoder.train()
+        mlm_head.train()
         loss_epoch = 0.0
         mlm_epoch = 0.0
         num_batches = 0
@@ -325,6 +328,10 @@ def main():
         mlm_avg = (mlm_total / denom).item()
 
         if val_loader is not None:
+            model.eval()
+            adapter.eval()
+            decoder.eval()
+            mlm_head.eval()
             val_c = 0.0
             val_mlm = 0.0
             val_batches = 0
@@ -384,6 +391,10 @@ def main():
                         "val_mlm": mlm_val_avg,
                     }
                 )
+            model.train()
+            adapter.train()
+            decoder.train()
+            mlm_head.train()
         else:
             accelerator.print(
                 f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}"

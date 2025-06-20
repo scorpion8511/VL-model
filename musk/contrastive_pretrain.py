@@ -134,17 +134,14 @@ def domain_clip_loss(
     domains: torch.Tensor,
     logit_scale: torch.Tensor,
 ) -> torch.Tensor:
-    """Apply contrastive loss separately for each domain label."""
-    unique_domains = domains.unique()
-    losses = []
-    for d in unique_domains:
-        mask = domains == d
-        if mask.sum() == 0:
-            continue
-        losses.append(clip_loss(image_emb[mask], text_emb[mask], logit_scale))
-    if not losses:
-        return torch.tensor(0.0, device=image_emb.device, requires_grad=True)
-    return torch.stack(losses).mean()
+    """Contrast images and captions only against samples from the same domain."""
+    logits = logit_scale * image_emb @ text_emb.t()
+    domain_eq = domains.unsqueeze(0) == domains.unsqueeze(1)
+    logits = logits.masked_fill(~domain_eq, -1e4)
+    labels = torch.arange(image_emb.size(0), device=image_emb.device)
+    loss_i = F.cross_entropy(logits, labels)
+    loss_t = F.cross_entropy(logits.t(), labels)
+    return (loss_i + loss_t) / 2
 
 
 def get_args():

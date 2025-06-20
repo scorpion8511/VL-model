@@ -44,21 +44,31 @@ from .utils import xlm_tokenizer
 from . import modeling  # register MUSK models
 
 
-class MLPAdapter(nn.Module):
-    """Simple bottleneck adapter inspired by ``m_adaptor.AdapterLearner``."""
+class MultiModalAdapter(nn.Module):
+    """Simplified multi-modal adapter based on :mod:`m_adaptor.py`."""
 
     def __init__(self, d_model: int, mid_dim: int = 256, scale: float = 1.0):
         super().__init__()
-        self.down = nn.Linear(d_model, mid_dim)
+        self.txt_down = nn.Linear(d_model, mid_dim)
+        self.txt_up = nn.Linear(mid_dim, d_model)
+        self.img_down = nn.Linear(d_model, mid_dim)
+        self.img_up = nn.Linear(mid_dim, d_model)
+        self.shared = nn.Sequential(
+            nn.Linear(mid_dim, mid_dim),
+            nn.ReLU(),
+            nn.Linear(mid_dim, mid_dim),
+        )
         self.relu = nn.ReLU()
-        self.up = nn.Linear(mid_dim, d_model)
         self.scale = scale
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.down(x)
-        y = self.relu(y)
-        y = self.up(y)
-        return x + self.scale * y
+    def forward(self, img_emb: torch.Tensor, txt_emb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        txt = self.relu(self.txt_down(txt_emb))
+        img = self.relu(self.img_down(img_emb))
+        txt = self.shared(txt)
+        img = self.shared(img)
+        txt = self.txt_up(txt)
+        img = self.img_up(img)
+        return img_emb + self.scale * img, txt_emb + self.scale * txt
 
 
 def get_pair_loader(urls: str, tokenizer: XLMRobertaTokenizer, batch_size: int, num_workers: int) -> DataLoader:
@@ -215,19 +225,16 @@ def main():
     mlm_head = nn.Linear(embed_dim, len(tokenizer))
 
     if args.use_adapter:
-        img_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
-        txt_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
+        adapter = MultiModalAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
     else:
-        img_adapter = nn.Identity()
-        txt_adapter = nn.Identity()
+        adapter = nn.Identity()
 
     optimizer = torch.optim.AdamW(
         itertools.chain(
             model.parameters(),
             decoder.parameters(),
             mlm_head.parameters(),
-            img_adapter.parameters(),
-            txt_adapter.parameters(),
+            adapter.parameters() if isinstance(adapter, nn.Module) else [],
         ),
         lr=args.lr,
         betas=(0.9, 0.95),
@@ -239,8 +246,7 @@ def main():
         model,
         decoder,
         mlm_head,
-        img_adapter,
-        txt_adapter,
+        adapter,
         optimizer,
         scheduler,
         pair_loader,
@@ -249,8 +255,7 @@ def main():
         model,
         decoder,
         mlm_head,
-        img_adapter,
-        txt_adapter,
+        adapter,
         optimizer,
         scheduler,
         pair_loader,
@@ -280,8 +285,8 @@ def main():
                     padding_mask=padding,
                     return_global=True,
                 )
-                img_emb = img_adapter(img_emb)
-                txt_emb = txt_adapter(txt_emb)
+                if not isinstance(adapter, nn.Identity):
+                    img_emb, txt_emb = adapter(img_emb, txt_emb)
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
                 accelerator.backward(loss_c)
@@ -335,8 +340,8 @@ def main():
                         padding_mask=padding,
                         return_global=True,
                     )
-                    img_emb = img_adapter(img_emb)
-                    txt_emb = txt_adapter(txt_emb)
+                    if not isinstance(adapter, nn.Identity):
+                        img_emb, txt_emb = adapter(img_emb, txt_emb)
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 

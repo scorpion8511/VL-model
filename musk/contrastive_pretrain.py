@@ -128,6 +128,25 @@ def clip_loss(image_emb: torch.Tensor, text_emb: torch.Tensor, logit_scale: torc
     return (loss_i + loss_t) / 2
 
 
+def domain_clip_loss(
+    image_emb: torch.Tensor,
+    text_emb: torch.Tensor,
+    domains: torch.Tensor,
+    logit_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Apply contrastive loss separately for each domain label."""
+    unique_domains = domains.unique()
+    losses = []
+    for d in unique_domains:
+        mask = domains == d
+        if mask.sum() == 0:
+            continue
+        losses.append(clip_loss(image_emb[mask], text_emb[mask], logit_scale))
+    if not losses:
+        return torch.tensor(0.0, device=image_emb.device, requires_grad=True)
+    return torch.stack(losses).mean()
+
+
 def get_args():
     p = argparse.ArgumentParser(description="Stage-two contrastive pretraining")
     p.add_argument("--pair-data", type=str, help="WebDataset pattern with paired image-text shards")
@@ -270,7 +289,13 @@ def main():
         loss_epoch = 0.0
         mlm_epoch = 0.0
         num_batches = 0
-        for images, tokens, padding in pair_loader:
+        for batch in pair_loader:
+            if len(batch) == 4:
+                images, tokens, padding, domains = batch
+                domains = domains.to(accelerator.device)
+            else:
+                images, tokens, padding = batch
+                domains = None
             optimizer.zero_grad()
             images = images.to(accelerator.device)
             tokens = tokens.to(accelerator.device)
@@ -287,7 +312,10 @@ def main():
                 img_emb = img_adapter(img_emb)
                 txt_emb = txt_adapter(txt_emb)
                 logit_scale = base_model.logit_scale.exp()
-                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                if domains is not None:
+                    loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)
+                else:
+                    loss_c = clip_loss(img_emb, txt_emb, logit_scale)
                 accelerator.backward(loss_c)
 
             # ----- Auxiliary MLM -----
@@ -332,7 +360,13 @@ def main():
             val_c = 0.0
             val_mlm = 0.0
             val_batches = 0
-            for images, tokens, padding in val_loader:
+            for batch in val_loader:
+                if len(batch) == 4:
+                    images, tokens, padding, domains = batch
+                    domains = domains.to(accelerator.device)
+                else:
+                    images, tokens, padding = batch
+                    domains = None
                 images = images.to(accelerator.device)
                 tokens = tokens.to(accelerator.device)
                 padding = padding.to(accelerator.device)
@@ -347,7 +381,10 @@ def main():
                     img_emb = img_adapter(img_emb)
                     txt_emb = txt_adapter(txt_emb)
                 logit_scale = base_model.logit_scale.exp()
-                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                if domains is not None:
+                    loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)
+                else:
+                    loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
                 mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
                 inp_tokens = tokens.clone()

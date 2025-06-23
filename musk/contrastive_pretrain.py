@@ -38,6 +38,7 @@ from transformers import XLMRobertaTokenizer
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 import wandb
+import contextlib
 
 from .json_dataset import ImageTextJsonDataset
 from .utils import xlm_tokenizer
@@ -281,7 +282,19 @@ def main():
             padding = padding.to(accelerator.device)
 
             # ----- Contrastive path -----
-            with accelerator.no_sync(model):
+            modules_to_sync = [model]
+            if args.use_domain_adapter:
+                modules_to_sync.extend(
+                    [
+                        img_adapter_xray,
+                        txt_adapter_xray,
+                        img_adapter_path,
+                        txt_adapter_path,
+                    ]
+                )
+            with contextlib.ExitStack() as stack:
+                for m in modules_to_sync:
+                    stack.enter_context(accelerator.no_sync(m))
                 img_emb, txt_emb = model(
                     image=images,
                     text_description=tokens,

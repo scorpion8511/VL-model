@@ -45,11 +45,13 @@ from . import modeling  # register MUSK models
 
 
 def get_pair_loader(urls: str, tokenizer: XLMRobertaTokenizer, batch_size: int, num_workers: int) -> DataLoader:
-    transform = torchvision.transforms.Compose([
-        torchvision.transforms.Resize(384, interpolation=3, antialias=True),
-        torchvision.transforms.CenterCrop((384, 384)),
-        torchvision.transforms.ToTensor(),
-    ])
+    transform = torchvision.transforms.Compose(
+        [
+            torchvision.transforms.Resize(384, interpolation=3, antialias=True),
+            torchvision.transforms.CenterCrop((384, 384)),
+            torchvision.transforms.ToTensor(),
+        ]
+    )
 
     def preprocess(img, txt):
         tokens, pad = xlm_tokenizer(txt.strip(), tokenizer)
@@ -59,12 +61,7 @@ def get_pair_loader(urls: str, tokenizer: XLMRobertaTokenizer, batch_size: int, 
             torch.tensor(pad, dtype=torch.bool),
         )
 
-    dataset = (
-        wds.WebDataset(urls)
-        .decode("pil")
-        .to_tuple("jpg;png", "txt")
-        .map(lambda img, txt: preprocess(img, txt))
-    )
+    dataset = wds.WebDataset(urls).decode("pil").to_tuple("jpg;png", "txt").map(lambda img, txt: preprocess(img, txt))
     return DataLoader(dataset.batched(batch_size), num_workers=num_workers)
 
 
@@ -111,6 +108,39 @@ def clip_loss(image_emb: torch.Tensor, text_emb: torch.Tensor, logit_scale: torc
     return (loss_i + loss_t) / 2
 
 
+class MLPAdapter(nn.Module):
+    """Simple two-layer residual adapter."""
+
+    def __init__(self, dim: int, hidden: int | None = None) -> None:
+        super().__init__()
+        hidden = hidden or dim
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.net(x)
+
+
+def domain_clip_loss(
+    image_emb: torch.Tensor,
+    text_emb: torch.Tensor,
+    domains: torch.Tensor | None,
+    logit_scale: torch.Tensor,
+) -> torch.Tensor:
+    if domains is None:
+        return clip_loss(image_emb, text_emb, logit_scale)
+    losses = []
+    for d in domains.unique().tolist():
+        mask = domains == d
+        if mask.any():
+            losses.append(clip_loss(image_emb[mask], text_emb[mask], logit_scale))
+    return torch.stack(losses).mean()
+
+
 def get_args():
     p = argparse.ArgumentParser(description="Stage-two contrastive pretraining")
     p.add_argument("--pair-data", type=str, help="WebDataset pattern with paired image-text shards")
@@ -135,6 +165,11 @@ def get_args():
         help="Path to encoder weights pretrained in stage one",
     )
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument(
+        "--use-domain-adapter",
+        action="store_true",
+        help="Enable domain-specific adapters for x-ray and pathology domains",
+    )
     return p.parse_args()
 
 
@@ -180,16 +215,48 @@ def main():
     decoder = CrossAttentionDecoder(embed_dim)
     mlm_head = nn.Linear(embed_dim, len(tokenizer))
 
+    img_adapter_xray = txt_adapter_xray = img_adapter_path = txt_adapter_path = None
+    if args.use_domain_adapter:
+        img_adapter_xray = MLPAdapter(embed_dim)
+        txt_adapter_xray = MLPAdapter(embed_dim)
+        img_adapter_path = MLPAdapter(embed_dim)
+        txt_adapter_path = MLPAdapter(embed_dim)
+
+    params = itertools.chain(model.parameters(), decoder.parameters(), mlm_head.parameters())
+    if args.use_domain_adapter:
+        params = itertools.chain(
+            params,
+            img_adapter_xray.parameters(),
+            txt_adapter_xray.parameters(),
+            img_adapter_path.parameters(),
+            txt_adapter_path.parameters(),
+        )
     optimizer = torch.optim.AdamW(
-        itertools.chain(model.parameters(), decoder.parameters(), mlm_head.parameters()),
+        params,
         lr=args.lr,
         betas=(0.9, 0.95),
         weight_decay=0.05,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(pair_loader))
 
-    components = accelerator.prepare(model, decoder, mlm_head, optimizer, scheduler, pair_loader)
-    model, decoder, mlm_head, optimizer, scheduler, pair_loader = components
+    modules = [model, decoder, mlm_head]
+    if args.use_domain_adapter:
+        modules.extend(
+            [
+                img_adapter_xray,
+                txt_adapter_xray,
+                img_adapter_path,
+                txt_adapter_path,
+            ]
+        )
+    modules.extend([optimizer, scheduler, pair_loader])
+    components = accelerator.prepare(*modules)
+    model, decoder, mlm_head = components[:3]
+    idx = 3
+    if args.use_domain_adapter:
+        img_adapter_xray, txt_adapter_xray, img_adapter_path, txt_adapter_path = components[idx : idx + 4]
+        idx += 4
+    optimizer, scheduler, pair_loader = components[idx : idx + 3]
     if val_loader is not None:
         val_loader = accelerator.prepare(val_loader)
     base_model = accelerator.unwrap_model(model)
@@ -201,7 +268,13 @@ def main():
         loss_epoch = 0.0
         mlm_epoch = 0.0
         num_batches = 0
-        for images, tokens, padding in pair_loader:
+        for batch in pair_loader:
+            if args.use_domain_adapter and len(batch) == 4:
+                images, tokens, padding, domains = batch
+                domains = domains.to(accelerator.device)
+            else:
+                images, tokens, padding = batch
+                domains = None
             optimizer.zero_grad()
             images = images.to(accelerator.device)
             tokens = tokens.to(accelerator.device)
@@ -215,8 +288,17 @@ def main():
                     padding_mask=padding,
                     return_global=True,
                 )
+                if args.use_domain_adapter and domains is not None:
+                    xray_mask = domains == 0
+                    path_mask = domains == 1
+                    if xray_mask.any():
+                        img_emb[xray_mask] = img_adapter_xray(img_emb[xray_mask])
+                        txt_emb[xray_mask] = txt_adapter_xray(txt_emb[xray_mask])
+                    if path_mask.any():
+                        img_emb[path_mask] = img_adapter_path(img_emb[path_mask])
+                        txt_emb[path_mask] = txt_adapter_path(txt_emb[path_mask])
                 logit_scale = base_model.logit_scale.exp()
-                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)
                 accelerator.backward(loss_c)
 
             # ----- Auxiliary MLM -----
@@ -256,7 +338,13 @@ def main():
             val_c = 0.0
             val_mlm = 0.0
             val_batches = 0
-            for images, tokens, padding in val_loader:
+            for batch in val_loader:
+                if args.use_domain_adapter and len(batch) == 4:
+                    images, tokens, padding, domains = batch
+                    domains = domains.to(accelerator.device)
+                else:
+                    images, tokens, padding = batch
+                    domains = None
                 images = images.to(accelerator.device)
                 tokens = tokens.to(accelerator.device)
                 padding = padding.to(accelerator.device)
@@ -268,8 +356,17 @@ def main():
                         padding_mask=padding,
                         return_global=True,
                     )
+                    if args.use_domain_adapter and domains is not None:
+                        xray_mask = domains == 0
+                        path_mask = domains == 1
+                        if xray_mask.any():
+                            img_emb[xray_mask] = img_adapter_xray(img_emb[xray_mask])
+                            txt_emb[xray_mask] = txt_adapter_xray(txt_emb[xray_mask])
+                        if path_mask.any():
+                            img_emb[path_mask] = img_adapter_path(img_emb[path_mask])
+                            txt_emb[path_mask] = txt_adapter_path(txt_emb[path_mask])
                 logit_scale = base_model.logit_scale.exp()
-                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)
 
                 mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
                 inp_tokens = tokens.clone()
@@ -297,9 +394,7 @@ def main():
             val_mlm_total = accelerator.reduce(torch.tensor(val_mlm, device=accelerator.device), reduction="sum")
             c_val_avg = (val_c_total / val_denom).item()
             mlm_val_avg = (val_mlm_total / val_denom).item()
-            accelerator.print(
-                f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f} Val_Contrastive={c_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
-            )
+            accelerator.print(f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f} Val_Contrastive={c_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}")
             if run:
                 run.log(
                     {
@@ -311,9 +406,7 @@ def main():
                     }
                 )
         else:
-            accelerator.print(
-                f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}"
-            )
+            accelerator.print(f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}")
             if run:
                 run.log(
                     {

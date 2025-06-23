@@ -287,12 +287,11 @@ def main():
         mlm_epoch = 0.0
         num_batches = 0
         for batch in pair_loader:
-            if len(batch) == 4:
-                images, tokens, padding, domains = batch
+            batch = list(batch)
+            images, tokens, padding = batch[:3]
+            domains = batch[3] if len(batch) > 3 else None
+            if domains is not None:
                 domains = domains.to(accelerator.device)
-            else:
-                images, tokens, padding = batch
-                domains = None
             optimizer.zero_grad()
             images = images.to(accelerator.device)
             tokens = tokens.to(accelerator.device)
@@ -358,12 +357,11 @@ def main():
             val_mlm = 0.0
             val_batches = 0
             for batch in val_loader:
-                if len(batch) == 4:
-                    images, tokens, padding, domains = batch
+                batch = list(batch)
+                images, tokens, padding = batch[:3]
+                domains = batch[3] if len(batch) > 3 else None
+                if domains is not None:
                     domains = domains.to(accelerator.device)
-                else:
-                    images, tokens, padding = batch
-                    domains = None
                 images = images.to(accelerator.device)
                 tokens = tokens.to(accelerator.device)
                 padding = padding.to(accelerator.device)

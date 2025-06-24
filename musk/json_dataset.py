@@ -1,12 +1,15 @@
 """Dataset utilities for loading image and text samples from a JSON file.
 
-Each line in the JSON file should be an object with two keys:
+Each line in the JSON file should be an object with at least ``image`` and
+``text`` fields:
 ```
 {"image": "/path/to/image.jpg", "text": "free form caption"}
 ```
 
 Use ``mode="image"`` to iterate over images only, ``mode="text"`` for text
-only, or ``mode="pair"`` to return ``(image, text)`` tuples.
+only, or ``mode="pair"`` to return ``(image, text)`` tuples. When a ``domain``
+field is present and ``mode="pair"``, it is returned as an integer label after
+the text tensors.
 """
 
 import json
@@ -70,13 +73,17 @@ class ImageTextJsonDataset(Dataset):
         item = self.items[idx]
         image_path = item.get("image")
         caption = item.get("text")
+        domain = item.get("domain")
 
         if self.mode == "image":
             return self._load_image(image_path)
         if self.mode == "text":
             return self._load_text(caption)
 
-        return (self._load_image(image_path),) + self._load_text(caption)
+        pair = (self._load_image(image_path),) + self._load_text(caption)
+        if domain is not None:
+            pair = pair + (torch.tensor(int(domain)),)
+        return pair
 
 
 def get_json_loader(

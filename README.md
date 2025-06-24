@@ -19,6 +19,9 @@ accelerate launch -m musk.contrastive_pretrain \
        --epochs 20 --output musk_stage2.pt
 ```
 
+Set `--use-domain-adapter` to enable domain-specific adapters when your dataset
+provides a `domain` label for each sample.
+
 The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss
 via a cross-attention decoder and reports both losses every epoch.
 training when available. The scripts configure DDP with

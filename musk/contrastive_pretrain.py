@@ -54,11 +54,47 @@ class MLPAdapter(nn.Module):
         self.up = nn.Linear(mid_dim, d_model)
         self.scale = scale
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, domains: torch.Tensor | None = None) -> torch.Tensor:
         y = self.down(x)
         y = self.relu(y)
         y = self.up(y)
         return x + self.scale * y
+
+
+class MOEAdapter(nn.Module):
+    """Mixture-of-experts adapter with domain-based routing."""
+
+    def __init__(
+        self,
+        d_model: int,
+        mid_dim: int = 256,
+        num_experts: int = 2,
+        scale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.experts = nn.ModuleList(
+            [
+                nn.Sequential(nn.Linear(d_model, mid_dim), nn.ReLU(), nn.Linear(mid_dim, d_model))
+                for _ in range(num_experts)
+            ]
+        )
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, domains: torch.Tensor | None = None) -> torch.Tensor:
+        if domains is None:
+            y = sum(expert(x) for expert in self.experts) / len(self.experts)
+            return x + self.scale * y
+
+        out = x.clone()
+        domains = domains.view(-1)
+        for idx, expert in enumerate(self.experts):
+            mask = domains == idx
+            if mask.any():
+                if x.dim() == 2:
+                    out[mask] = out[mask] + self.scale * expert(x[mask])
+                else:  # (B, L, D)
+                    out[mask] = out[mask] + self.scale * expert(x[mask])
+        return out
 
 
 def get_pair_loader(urls: str, tokenizer: XLMRobertaTokenizer, batch_size: int, num_workers: int) -> DataLoader:
@@ -174,10 +210,21 @@ def get_args():
         help="Apply bottleneck adapters to image and text embeddings",
     )
     p.add_argument(
+        "--use-moe",
+        action="store_true",
+        help="Use mixture-of-experts adapters keyed by domain labels",
+    )
+    p.add_argument(
         "--adapter-dim",
         type=int,
         default=256,
         help="Hidden dimension of the adapter MLP",
+    )
+    p.add_argument(
+        "--num-experts",
+        type=int,
+        default=2,
+        help="Number of experts for MOE adapters",
     )
     p.add_argument(
         "--adapter-scale",
@@ -230,7 +277,14 @@ def main():
     decoder = CrossAttentionDecoder(embed_dim)
     mlm_head = nn.Linear(embed_dim, len(tokenizer))
 
-    if args.use_adapter:
+    if args.use_moe:
+        img_adapter = MOEAdapter(
+            embed_dim, args.adapter_dim, args.num_experts, args.adapter_scale
+        )
+        txt_adapter = MOEAdapter(
+            embed_dim, args.adapter_dim, args.num_experts, args.adapter_scale
+        )
+    elif args.use_adapter:
         img_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
         txt_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
     else:
@@ -305,8 +359,8 @@ def main():
                     padding_mask=padding,
                     return_global=True,
                 )
-                img_emb = img_adapter(img_emb)
-                txt_emb = txt_adapter(txt_emb)
+                img_emb = img_adapter(img_emb, domains)
+                txt_emb = txt_adapter(txt_emb, domains)
                 logit_scale = base_model.logit_scale.exp()
                 if domains is not None:
                     loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)
@@ -373,8 +427,8 @@ def main():
                         padding_mask=padding,
                         return_global=True,
                     )
-                    img_emb = img_adapter(img_emb)
-                    txt_emb = txt_adapter(txt_emb)
+                    img_emb = img_adapter(img_emb, domains)
+                    txt_emb = txt_adapter(txt_emb, domains)
                 logit_scale = base_model.logit_scale.exp()
                 if domains is not None:
                     loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)

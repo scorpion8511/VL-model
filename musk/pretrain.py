@@ -39,6 +39,63 @@ from .utils import xlm_tokenizer
 from . import modeling  # ensure custom models are registered
 
 
+class MLPAdapter(torch.nn.Module):
+    """Simple bottleneck adapter."""
+
+    def __init__(self, d_model: int, mid_dim: int = 256, scale: float = 1.0) -> None:
+        super().__init__()
+        self.down = torch.nn.Linear(d_model, mid_dim)
+        self.relu = torch.nn.ReLU()
+        self.up = torch.nn.Linear(mid_dim, d_model)
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, domains: torch.Tensor | None = None) -> torch.Tensor:
+        y = self.down(x)
+        y = self.relu(y)
+        y = self.up(y)
+        return x + self.scale * y
+
+
+class MOEAdapter(torch.nn.Module):
+    """Mixture-of-experts adapter with optional domain routing."""
+
+    def __init__(
+        self,
+        d_model: int,
+        mid_dim: int = 256,
+        num_experts: int = 2,
+        scale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.experts = torch.nn.ModuleList(
+            [
+                torch.nn.Sequential(
+                    torch.nn.Linear(d_model, mid_dim),
+                    torch.nn.ReLU(),
+                    torch.nn.Linear(mid_dim, d_model),
+                )
+                for _ in range(num_experts)
+            ]
+        )
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, domains: torch.Tensor | None = None) -> torch.Tensor:
+        if domains is None:
+            y = sum(expert(x) for expert in self.experts) / len(self.experts)
+            return x + self.scale * y
+
+        out = x.clone()
+        domains = domains.view(-1)
+        for idx, expert in enumerate(self.experts):
+            mask = domains == idx
+            if mask.any():
+                if x.dim() == 2:
+                    out[mask] = out[mask] + self.scale * expert(x[mask])
+                else:
+                    out[mask] = out[mask] + self.scale * expert(x[mask])
+        return out
+
+
 def get_image_loader(urls, batch_size, num_workers):
     transform = torchvision.transforms.Compose([
         torchvision.transforms.Resize(384, interpolation=3, antialias=True),
@@ -89,6 +146,24 @@ def get_args():
         help="Optional path to save only the encoder weights for stage-two training",
     )
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument(
+        "--use-adapter",
+        action="store_true",
+        help="Apply bottleneck adapters to image and text features",
+    )
+    parser.add_argument(
+        "--use-moe",
+        action="store_true",
+        help="Use mixture-of-experts adapters",
+    )
+    parser.add_argument("--adapter-dim", type=int, default=256, help="Adapter hidden dimension")
+    parser.add_argument("--num-experts", type=int, default=2, help="Number of experts for MOE")
+    parser.add_argument(
+        "--adapter-scale",
+        type=float,
+        default=1.0,
+        help="Residual scaling applied to adapter output",
+    )
     return parser.parse_args()
 
 
@@ -143,15 +218,51 @@ def main():
     img_decoder = torch.nn.Linear(embed_dim, 3 * patch_size * patch_size)
     txt_decoder = torch.nn.Linear(embed_dim, len(tokenizer))
 
+    if args.use_moe:
+        img_adapter = MOEAdapter(
+            embed_dim, args.adapter_dim, args.num_experts, args.adapter_scale
+        )
+        txt_adapter = MOEAdapter(
+            embed_dim, args.adapter_dim, args.num_experts, args.adapter_scale
+        )
+    elif args.use_adapter:
+        img_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
+        txt_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
+    else:
+        img_adapter = torch.nn.Identity()
+        txt_adapter = torch.nn.Identity()
+
     optimizer = torch.optim.AdamW(
-        itertools.chain(model.parameters(), img_decoder.parameters(), txt_decoder.parameters()),
+        itertools.chain(
+            model.parameters(),
+            img_decoder.parameters(),
+            txt_decoder.parameters(),
+            img_adapter.parameters(),
+            txt_adapter.parameters(),
+        ),
         lr=args.lr,
     )
 
     components = accelerator.prepare(
-        model, img_decoder, txt_decoder, optimizer, image_loader, text_loader
+        model,
+        img_decoder,
+        txt_decoder,
+        img_adapter,
+        txt_adapter,
+        optimizer,
+        image_loader,
+        text_loader,
     )
-    model, img_decoder, txt_decoder, optimizer, image_loader, text_loader = components
+    (
+        model,
+        img_decoder,
+        txt_decoder,
+        img_adapter,
+        txt_adapter,
+        optimizer,
+        image_loader,
+        text_loader,
+    ) = components
     if val_image_loader is not None:
         val_image_loader = accelerator.prepare(val_image_loader)
         val_text_loader = accelerator.prepare(val_text_loader)
@@ -160,6 +271,10 @@ def main():
     ce_loss = torch.nn.CrossEntropyLoss()
 
     model.train()
+    if hasattr(img_adapter, "train"):
+        img_adapter.train()
+    if hasattr(txt_adapter, "train"):
+        txt_adapter.train()
     for epoch in range(args.epochs):
         mim_loss_epoch = 0.0
         mlm_loss_epoch = 0.0
@@ -180,6 +295,7 @@ def main():
                     return_global=False,
                     return_seq=True,
                 )
+                img_seq = img_adapter(img_seq)
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
@@ -200,6 +316,7 @@ def main():
                 return_global=False,
                 return_seq=True,
             )
+            txt_seq = txt_adapter(txt_seq)
             pred = txt_decoder(txt_seq[mask_txt])
             loss_txt = ce_loss(pred, tokens[mask_txt])
 
@@ -218,6 +335,12 @@ def main():
         mlm_avg = (mlm_total / denom).item()
 
         if val_image_loader is not None:
+            model.eval()
+            if hasattr(img_adapter, "eval"):
+                img_adapter.eval()
+            if hasattr(txt_adapter, "eval"):
+                txt_adapter.eval()
+
             val_mim = 0.0
             val_mlm = 0.0
             val_batches = 0
@@ -234,6 +357,7 @@ def main():
                         return_global=False,
                         return_seq=True,
                     )
+                    img_seq = img_adapter(img_seq)
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
@@ -253,6 +377,7 @@ def main():
                         return_global=False,
                         return_seq=True,
                     )
+                    txt_seq = txt_adapter(txt_seq)
                 pred_txt = txt_decoder(txt_seq[mask_txt])
                 loss_txt = ce_loss(pred_txt, tokens[mask_txt])
 
@@ -278,6 +403,11 @@ def main():
                         "val_mlm": mlm_val_avg,
                     }
                 )
+            model.train()
+            if hasattr(img_adapter, "train"):
+                img_adapter.train()
+            if hasattr(txt_adapter, "train"):
+                txt_adapter.train()
         else:
             accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
             if run:

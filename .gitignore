@@ -1,10 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-.DS_Store
-
-# C extensions
 *.so
+.DS_Store
 
 # Distribution / packaging
 bin/
@@ -49,6 +47,8 @@ coverage.xml
 
 # Sphinx documentation
 docs/_build/
+
+# Misc
 features
 root
 cifar-100-*
@@ -56,11 +56,13 @@ probe_benchmark/data
 downloads
 .env
 
-# model weights
+# Model weights
 *.pth
 *.zip
 *.pt
 *.csv
 *.json
 !zero2_config.json
-pretrain/
+
+# Training logs
+wandb/

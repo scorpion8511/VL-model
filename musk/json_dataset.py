@@ -33,7 +33,12 @@ def _load_json_lines(path: str) -> List[dict]:
 
 
 class ImageTextJsonDataset(Dataset):
-    """Dataset reading samples from a JSON lines file."""
+    """Dataset reading samples from a JSON lines file.
+
+    When ``mode="pair"``, each sample returns ``(image, tokens, padding, domain)``
+    where ``domain`` is ``0`` for x-ray and ``1`` for pathology based on the
+    presence of those keywords in the caption text.
+    """
 
     def __init__(
         self,
@@ -53,6 +58,13 @@ class ImageTextJsonDataset(Dataset):
             ]
         )
         self.tokenizer = tokenizer
+
+    def _infer_domain(self, text: str) -> int:
+        """Return 0 for x-ray captions and 1 for pathology captions."""
+        text_l = text.lower()
+        if "xray" in text_l or "x-ray" in text_l:
+            return 0
+        return 1
 
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.items)
@@ -76,7 +88,9 @@ class ImageTextJsonDataset(Dataset):
         if self.mode == "text":
             return self._load_text(caption)
 
-        return (self._load_image(image_path),) + self._load_text(caption)
+        tokens, pad = self._load_text(caption)
+        domain = self._infer_domain(caption)
+        return self._load_image(image_path), tokens, pad, domain
 
 
 def get_json_loader(

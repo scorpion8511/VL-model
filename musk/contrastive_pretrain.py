@@ -44,6 +44,59 @@ from .utils import xlm_tokenizer
 from . import modeling  # register MUSK models
 
 
+class MLPAdapter(nn.Module):
+    """Simple bottleneck adapter inspired by ``m_adaptor.AdapterLearner``."""
+
+    def __init__(self, d_model: int, mid_dim: int = 256, scale: float = 1.0):
+        super().__init__()
+        self.down = nn.Linear(d_model, mid_dim)
+        self.relu = nn.ReLU()
+        self.up = nn.Linear(mid_dim, d_model)
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, domains: torch.Tensor | None = None) -> torch.Tensor:
+        y = self.down(x)
+        y = self.relu(y)
+        y = self.up(y)
+        return x + self.scale * y
+
+
+class MOEAdapter(nn.Module):
+    """Mixture-of-experts adapter with domain-based routing."""
+
+    def __init__(
+        self,
+        d_model: int,
+        mid_dim: int = 256,
+        num_experts: int = 2,
+        scale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.experts = nn.ModuleList(
+            [
+                nn.Sequential(nn.Linear(d_model, mid_dim), nn.ReLU(), nn.Linear(mid_dim, d_model))
+                for _ in range(num_experts)
+            ]
+        )
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, domains: torch.Tensor | None = None) -> torch.Tensor:
+        if domains is None:
+            y = sum(expert(x) for expert in self.experts) / len(self.experts)
+            return x + self.scale * y
+
+        out = x.clone()
+        domains = domains.view(-1)
+        for idx, expert in enumerate(self.experts):
+            mask = domains == idx
+            if mask.any():
+                if x.dim() == 2:
+                    out[mask] = out[mask] + self.scale * expert(x[mask])
+                else:  # (B, L, D)
+                    out[mask] = out[mask] + self.scale * expert(x[mask])
+        return out
+
+
 def get_pair_loader(urls: str, tokenizer: XLMRobertaTokenizer, batch_size: int, num_workers: int) -> DataLoader:
     transform = torchvision.transforms.Compose([
         torchvision.transforms.Resize(384, interpolation=3, antialias=True),
@@ -111,6 +164,22 @@ def clip_loss(image_emb: torch.Tensor, text_emb: torch.Tensor, logit_scale: torc
     return (loss_i + loss_t) / 2
 
 
+def domain_clip_loss(
+    image_emb: torch.Tensor,
+    text_emb: torch.Tensor,
+    domains: torch.Tensor,
+    logit_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Contrast images and captions only against samples from the same domain."""
+    logits = logit_scale * image_emb @ text_emb.t()
+    domain_eq = domains.unsqueeze(0) == domains.unsqueeze(1)
+    logits = logits.masked_fill(~domain_eq, -1e4)
+    labels = torch.arange(image_emb.size(0), device=image_emb.device)
+    loss_i = F.cross_entropy(logits, labels)
+    loss_t = F.cross_entropy(logits.t(), labels)
+    return (loss_i + loss_t) / 2
+
+
 def get_args():
     p = argparse.ArgumentParser(description="Stage-two contrastive pretraining")
     p.add_argument("--pair-data", type=str, help="WebDataset pattern with paired image-text shards")
@@ -135,6 +204,34 @@ def get_args():
         help="Path to encoder weights pretrained in stage one",
     )
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument(
+        "--use-adapter",
+        action="store_true",
+        help="Apply bottleneck adapters to image and text embeddings",
+    )
+    p.add_argument(
+        "--use-moe",
+        action="store_true",
+        help="Use mixture-of-experts adapters keyed by domain labels",
+    )
+    p.add_argument(
+        "--adapter-dim",
+        type=int,
+        default=256,
+        help="Hidden dimension of the adapter MLP",
+    )
+    p.add_argument(
+        "--num-experts",
+        type=int,
+        default=2,
+        help="Number of experts for MOE adapters",
+    )
+    p.add_argument(
+        "--adapter-scale",
+        type=float,
+        default=1.0,
+        help="Residual scaling applied to adapter output",
+    )
     return p.parse_args()
 
 
@@ -180,28 +277,75 @@ def main():
     decoder = CrossAttentionDecoder(embed_dim)
     mlm_head = nn.Linear(embed_dim, len(tokenizer))
 
+    if args.use_moe:
+        img_adapter = MOEAdapter(
+            embed_dim, args.adapter_dim, args.num_experts, args.adapter_scale
+        )
+        txt_adapter = MOEAdapter(
+            embed_dim, args.adapter_dim, args.num_experts, args.adapter_scale
+        )
+    elif args.use_adapter:
+        img_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
+        txt_adapter = MLPAdapter(embed_dim, args.adapter_dim, args.adapter_scale)
+    else:
+        img_adapter = nn.Identity()
+        txt_adapter = nn.Identity()
+
     optimizer = torch.optim.AdamW(
-        itertools.chain(model.parameters(), decoder.parameters(), mlm_head.parameters()),
+        itertools.chain(
+            model.parameters(),
+            decoder.parameters(),
+            mlm_head.parameters(),
+            img_adapter.parameters(),
+            txt_adapter.parameters(),
+        ),
         lr=args.lr,
         betas=(0.9, 0.95),
         weight_decay=0.05,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(pair_loader))
 
-    components = accelerator.prepare(model, decoder, mlm_head, optimizer, scheduler, pair_loader)
-    model, decoder, mlm_head, optimizer, scheduler, pair_loader = components
+    components = accelerator.prepare(
+        model,
+        decoder,
+        mlm_head,
+        img_adapter,
+        txt_adapter,
+        optimizer,
+        scheduler,
+        pair_loader,
+    )
+    (
+        model,
+        decoder,
+        mlm_head,
+        img_adapter,
+        txt_adapter,
+        optimizer,
+        scheduler,
+        pair_loader,
+    ) = components
     if val_loader is not None:
         val_loader = accelerator.prepare(val_loader)
     base_model = accelerator.unwrap_model(model)
 
     ce_loss = nn.CrossEntropyLoss()
 
-    model.train()
     for epoch in range(args.epochs):
+        model.train()
+        img_adapter.train()
+        txt_adapter.train()
+        decoder.train()
+        mlm_head.train()
         loss_epoch = 0.0
         mlm_epoch = 0.0
         num_batches = 0
-        for images, tokens, padding in pair_loader:
+        for batch in pair_loader:
+            batch = list(batch)
+            images, tokens, padding = batch[:3]
+            domains = batch[3] if len(batch) > 3 else None
+            if domains is not None:
+                domains = domains.to(accelerator.device)
             optimizer.zero_grad()
             images = images.to(accelerator.device)
             tokens = tokens.to(accelerator.device)
@@ -215,8 +359,13 @@ def main():
                     padding_mask=padding,
                     return_global=True,
                 )
+                img_emb = img_adapter(img_emb, domains)
+                txt_emb = txt_adapter(txt_emb, domains)
                 logit_scale = base_model.logit_scale.exp()
-                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                if domains is not None:
+                    loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)
+                else:
+                    loss_c = clip_loss(img_emb, txt_emb, logit_scale)
                 accelerator.backward(loss_c)
 
             # ----- Auxiliary MLM -----
@@ -253,10 +402,20 @@ def main():
         mlm_avg = (mlm_total / denom).item()
 
         if val_loader is not None:
+            model.eval()
+            img_adapter.eval()
+            txt_adapter.eval()
+            decoder.eval()
+            mlm_head.eval()
             val_c = 0.0
             val_mlm = 0.0
             val_batches = 0
-            for images, tokens, padding in val_loader:
+            for batch in val_loader:
+                batch = list(batch)
+                images, tokens, padding = batch[:3]
+                domains = batch[3] if len(batch) > 3 else None
+                if domains is not None:
+                    domains = domains.to(accelerator.device)
                 images = images.to(accelerator.device)
                 tokens = tokens.to(accelerator.device)
                 padding = padding.to(accelerator.device)
@@ -268,8 +427,13 @@ def main():
                         padding_mask=padding,
                         return_global=True,
                     )
+                    img_emb = img_adapter(img_emb, domains)
+                    txt_emb = txt_adapter(txt_emb, domains)
                 logit_scale = base_model.logit_scale.exp()
-                loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                if domains is not None:
+                    loss_c = domain_clip_loss(img_emb, txt_emb, domains, logit_scale)
+                else:
+                    loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
                 mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
                 inp_tokens = tokens.clone()
@@ -310,6 +474,11 @@ def main():
                         "val_mlm": mlm_val_avg,
                     }
                 )
+            model.train()
+            img_adapter.train()
+            txt_adapter.train()
+            decoder.train()
+            mlm_head.train()
         else:
             accelerator.print(
                 f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}"

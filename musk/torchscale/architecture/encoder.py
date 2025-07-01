@@ -53,7 +53,6 @@ class EncoderLayer(nn.Module):
                 ),
             )
         else:
-            assert not self.args.multiway
             if args.moe_top1_expert:
                 gate = Top1Gate(
                     self.embed_dim,

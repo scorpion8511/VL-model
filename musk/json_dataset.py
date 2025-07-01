@@ -1,12 +1,15 @@
 """Dataset utilities for loading image and text samples from a JSON file.
 
-Each line in the JSON file should be an object with two keys:
-```
-{"image": "/path/to/image.jpg", "text": "free form caption"}
-```
+Each line in the JSON file should be an object with two keys::
+
+    {"image": "/path/to/image.jpg", "text": "free form caption"}
 
 Use ``mode="image"`` to iterate over images only, ``mode="text"`` for text
 only, or ``mode="pair"`` to return ``(image, text)`` tuples.
+
+``_infer_domain`` provides a tiny heuristic for categorising captions by
+domain. It returns ``0`` for captions mentioning ``"x-ray"``, ``1`` for
+``"pathology"`` and ``2`` for ``"endoscopy"``.
 """
 
 import json
@@ -30,6 +33,28 @@ def _load_json_lines(path: str) -> List[dict]:
                 continue
             items.append(json.loads(line))
     return items
+
+
+def _infer_domain(text: str) -> int:
+    """Heuristically map a caption to a domain label.
+
+    The mapping is:
+        0 - ``"x-ray"``
+        1 - ``"pathology"``
+        2 - ``"endoscopy"``
+
+    The check is case-insensitive and falls back to ``0`` when none of the
+    keywords are present.
+    """
+
+    t = text.lower()
+    if "x-ray" in t or "xray" in t:
+        return 0
+    if "pathology" in t:
+        return 1
+    if "endoscopy" in t:
+        return 2
+    return 0
 
 
 class ImageTextJsonDataset(Dataset):

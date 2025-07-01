@@ -10,7 +10,8 @@ only, or ``mode="pair"`` to return ``(image, text)`` tuples.
 """
 
 import json
-from typing import List, Tuple
+from typing import List, Tuple, Dict
+from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -53,6 +54,7 @@ class ImageTextJsonDataset(Dataset):
             ]
         )
         self.tokenizer = tokenizer
+        self.domain_map: Dict[str, int] = {}
 
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.items)
@@ -66,17 +68,33 @@ class ImageTextJsonDataset(Dataset):
         tokens, pad = xlm_tokenizer(text.strip(), self.tokenizer)
         return torch.tensor(tokens), torch.tensor(pad, dtype=torch.bool)
 
+    def _infer_domain(self, item: dict) -> int:
+        if "domain" in item:
+            return int(item["domain"])
+        image_path = item.get("image")
+        if image_path:
+            name = Path(image_path).parent.name
+        else:
+            text = item.get("text", "")
+            name = text.split()[0] if text else ""
+        if name not in self.domain_map:
+            self.domain_map[name] = len(self.domain_map)
+        return self.domain_map[name]
+
     def __getitem__(self, idx: int):  # type: ignore[override]
         item = self.items[idx]
         image_path = item.get("image")
         caption = item.get("text")
+        domain = self._infer_domain(item)
 
         if self.mode == "image":
-            return self._load_image(image_path)
+            return self._load_image(image_path), domain
         if self.mode == "text":
-            return self._load_text(caption)
+            return (*self._load_text(caption), domain)
 
-        return (self._load_image(image_path),) + self._load_text(caption)
+        img = self._load_image(image_path)
+        tokens, pad = self._load_text(caption)
+        return img, tokens, pad, domain
 
 
 def get_json_loader(

@@ -204,7 +204,7 @@ class MOELayer(Base):
 
         if has_tutel:
             l_aux, self.metadata, C, E, indices_, locations_, gates_ = self.gate(
-                reshaped_input, reshaped_input_padding_mask
+                reshaped_input, reshaped_input_padding_mask, **kwargs
             )
             S, M = reshaped_input.size(0), reshaped_input.size(1)
 
@@ -216,7 +216,7 @@ class MOELayer(Base):
             dispatched_input = self._tutel_dispatcher.encode(reshaped_input)
         else:
             l_aux, combine_weights, dispatch_mask, self.metadata = self.gate(
-                reshaped_input, reshaped_input_padding_mask
+                reshaped_input, reshaped_input_padding_mask, **kwargs
             )
 
             dispatch_mask = dispatch_mask.to(input.dtype).permute(

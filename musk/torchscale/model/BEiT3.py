@@ -54,6 +54,7 @@ class BEiT3(nn.Module):
         vision_masked_position=None,
         incremental_state=None,
         positions=None,
+        domain_labels=None,
     ):
         assert textual_tokens is not None or visual_tokens is not None
 
@@ -90,6 +91,7 @@ class BEiT3(nn.Module):
             multiway_split_position=multiway_split_position,
             incremental_state=incremental_state,
             positions=positions,
+            domain_labels=domain_labels,
         )
         encoder_out["multiway_split_position"] = multiway_split_position
 

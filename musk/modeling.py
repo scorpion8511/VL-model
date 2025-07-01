@@ -118,6 +118,8 @@ class MUSK(ModelWrapper):
         max_split_size: Optional[int] = None,
         vision_mask: Optional[torch.Tensor] = None,
         return_seq: bool = False,
+        domain: Optional[torch.Tensor] = None,
+        return_l_aux: bool = False,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass for vision-language model.
@@ -146,6 +148,7 @@ class MUSK(ModelWrapper):
         # Process image input
         vision_cls = None
         vision_seq = None
+        l_aux_total = None
         if image is not None:
             if ms_aug:
                 vision_cls = MultiScaleForward(
@@ -157,8 +160,9 @@ class MUSK(ModelWrapper):
                 if with_head:
                     vision_cls = self.vision_head(vision_cls[:, :1024])
             else:
-                outputs = self.beit3(visual_tokens=image, vision_masked_position=vision_mask)
+                outputs = self.beit3(visual_tokens=image, vision_masked_position=vision_mask, domain_labels=domain)
                 x = outputs["encoder_out"]
+                l_aux_total = sum([t for t in outputs.get("l_aux", []) if t is not None])
                 if return_seq:
                     vision_seq = x[:, 1:]
                 vision_cls = x[:, 0, :] if return_global else x
@@ -174,8 +178,10 @@ class MUSK(ModelWrapper):
             outputs = self.beit3(
                 textual_tokens=text_description,
                 text_padding_position=padding_mask,
+                domain_labels=domain,
             )
             x = outputs["encoder_out"]
+            l_aux_total = sum([t for t in outputs.get("l_aux", []) if t is not None])
             if return_seq:
                 language_seq = x
             language_cls = x[:, 0, :] if return_global else x
@@ -185,7 +191,11 @@ class MUSK(ModelWrapper):
                 language_cls = F.normalize(language_cls, dim=-1)
 
         if return_seq:
+            if return_l_aux:
+                return vision_cls, language_cls, vision_seq, language_seq, l_aux_total
             return vision_cls, language_cls, vision_seq, language_seq
+        if return_l_aux:
+            return vision_cls, language_cls, l_aux_total
         return vision_cls, language_cls
 
 
@@ -194,8 +204,15 @@ def trunc_normal_(tensor, mean=0., std=1.):
 
 
 def _get_large_config(
-        img_size=224, patch_size=16, drop_path_rate=0,
-        checkpoint_activations=None, mlp_ratio=4, vocab_size=64010, **kwargs
+        img_size=224,
+        patch_size=16,
+        drop_path_rate=0,
+        checkpoint_activations=None,
+        mlp_ratio=4,
+        vocab_size=64010,
+        moe_expert_count=0,
+        moe_freq=0,
+        **kwargs
 ):
     return EncoderConfig(
         img_size=img_size, patch_size=patch_size, vocab_size=vocab_size, multiway=True,
@@ -203,6 +220,8 @@ def _get_large_config(
         drop_path_rate=drop_path_rate, encoder_embed_dim=1024, encoder_attention_heads=16,
         encoder_ffn_embed_dim=int(1024 * mlp_ratio), encoder_layers=24,
         checkpoint_activations=checkpoint_activations,
+        moe_expert_count=moe_expert_count,
+        moe_freq=moe_freq,
     )
 
 @register_model

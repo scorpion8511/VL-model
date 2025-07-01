@@ -89,6 +89,8 @@ def get_args():
         help="Optional path to save only the encoder weights for stage-two training",
     )
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-experts", type=int, default=0, help="Number of MoE experts")
+    parser.add_argument("--moe-freq", type=int, default=0, help="Insert MoE layer every N blocks")
     return parser.parse_args()
 
 
@@ -136,7 +138,11 @@ def main():
         val_image_loader = None
         val_text_loader = None
 
-    model = create_model("musk_large_patch16_384")
+    model = create_model(
+        "musk_large_patch16_384",
+        moe_expert_count=args.num_experts,
+        moe_freq=args.moe_freq,
+    )
     unwrapped = accelerator.unwrap_model(model)
     embed_dim = unwrapped.beit3.args.encoder_embed_dim
     patch_size = unwrapped.beit3.args.patch_size
@@ -164,7 +170,18 @@ def main():
         mim_loss_epoch = 0.0
         mlm_loss_epoch = 0.0
         num_batches = 0
-        for images, (tokens, padding) in zip(image_loader, text_loader):
+        for img_batch, txt_batch in zip(image_loader, text_loader):
+            if isinstance(img_batch, (list, tuple)) and len(img_batch) == 2:
+                images, img_domain = img_batch
+            else:
+                images = img_batch
+                img_domain = None
+
+            if isinstance(txt_batch, (list, tuple)) and len(txt_batch) == 3:
+                tokens, padding, txt_domain = txt_batch
+            else:
+                tokens, padding = txt_batch
+                txt_domain = None
             optimizer.zero_grad()
 
             # ----- Masked Image Modeling -----
@@ -172,18 +189,22 @@ def main():
             num_patches = (H // patch_size) * (W // patch_size)
             mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
             with accelerator.no_sync(model):
-                _, _, img_seq, _ = model(
+                _, _, img_seq, _, l_aux = model(
                     image=images,
                     vision_mask=mask_img,
                     with_head=False,
                     out_norm=False,
                     return_global=False,
                     return_seq=True,
+                    domain=img_domain,
+                    return_l_aux=True,
                 )
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
                 loss_img = mse_loss(pred, target)
+                if l_aux is not None:
+                    loss_img = loss_img + l_aux
                 accelerator.backward(loss_img)
 
             # ----- Masked Language Modeling -----
@@ -192,16 +213,20 @@ def main():
             mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
-            _, _, _, txt_seq = model(
+            _, _, _, txt_seq, l_aux_txt = model(
                 text_description=inp_tokens,
                 padding_mask=padding,
                 with_head=False,
                 out_norm=False,
                 return_global=False,
                 return_seq=True,
+                domain=txt_domain,
+                return_l_aux=True,
             )
             pred = txt_decoder(txt_seq[mask_txt])
             loss_txt = ce_loss(pred, tokens[mask_txt])
+            if l_aux_txt is not None:
+                loss_txt = loss_txt + l_aux_txt
 
             accelerator.backward(loss_txt)
             optimizer.step()
@@ -221,23 +246,38 @@ def main():
             val_mim = 0.0
             val_mlm = 0.0
             val_batches = 0
-            for images, (tokens, padding) in zip(val_image_loader, val_text_loader):
+            for img_batch, txt_batch in zip(val_image_loader, val_text_loader):
+                if isinstance(img_batch, (list, tuple)) and len(img_batch) == 2:
+                    images, img_domain = img_batch
+                else:
+                    images = img_batch
+                    img_domain = None
+
+                if isinstance(txt_batch, (list, tuple)) and len(txt_batch) == 3:
+                    tokens, padding, txt_domain = txt_batch
+                else:
+                    tokens, padding = txt_batch
+                    txt_domain = None
                 B, _, H, W = images.shape
                 num_patches = (H // patch_size) * (W // patch_size)
                 mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
                 with torch.no_grad():
-                    _, _, img_seq, _ = model(
+                    _, _, img_seq, _, l_aux = model(
                         image=images,
                         vision_mask=mask_img,
                         with_head=False,
                         out_norm=False,
                         return_global=False,
                         return_seq=True,
+                        domain=img_domain,
+                        return_l_aux=True,
                     )
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
                 loss_img = mse_loss(pred, target)
+                if l_aux is not None:
+                    loss_img = loss_img + l_aux
 
                 tokens = tokens.to(images.device)
                 padding = padding.to(images.device)
@@ -245,16 +285,20 @@ def main():
                 inp_tokens = tokens.clone()
                 inp_tokens[mask_txt] = mask_token_id
                 with torch.no_grad():
-                    _, _, _, txt_seq = model(
+                    _, _, _, txt_seq, l_aux_txt = model(
                         text_description=inp_tokens,
                         padding_mask=padding,
                         with_head=False,
                         out_norm=False,
                         return_global=False,
                         return_seq=True,
+                        domain=txt_domain,
+                        return_l_aux=True,
                     )
                 pred_txt = txt_decoder(txt_seq[mask_txt])
                 loss_txt = ce_loss(pred_txt, tokens[mask_txt])
+                if l_aux_txt is not None:
+                    loss_txt = loss_txt + l_aux_txt
 
                 val_mim += loss_img.item()
                 val_mlm += loss_txt.item()

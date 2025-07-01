@@ -69,8 +69,13 @@ class ImageTextJsonDataset(Dataset):
         return torch.tensor(tokens), torch.tensor(pad, dtype=torch.bool)
 
     def _infer_domain(self, item: dict) -> int:
-        if "domain" in item:
-            return int(item["domain"])
+        domain = item.get("domain")
+        if domain is not None:
+            if isinstance(domain, int):
+                return domain
+            if domain not in self.domain_map:
+                self.domain_map[domain] = len(self.domain_map)
+            return self.domain_map[domain]
         image_path = item.get("image")
         if image_path:
             name = Path(image_path).parent.name

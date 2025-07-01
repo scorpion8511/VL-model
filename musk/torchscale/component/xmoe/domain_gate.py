@@ -19,7 +19,7 @@ class DomainGate(torch.nn.Module):
         assert domain_ids is not None, "Domain IDs required"
         num_tokens = input.size(0)
         device = input.device
-        domain_ids = domain_ids.to(device).view(-1, 1)
+        domain_ids = (domain_ids % self.num_experts).to(device).view(-1, 1)
         mask1 = one_hot(domain_ids, self.num_experts)
         if mask is not None:
             mask1 = mask1 * (~mask).unsqueeze(-1).to(mask1.dtype)

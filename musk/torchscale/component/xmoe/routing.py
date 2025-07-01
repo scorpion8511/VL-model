@@ -183,7 +183,7 @@ class Top1Gate(torch.nn.Module):
         self.capacity_factor = capacity_factor
         self.moe_eval_capacity_token_fraction = moe_eval_capacity_token_fraction
 
-    def forward(self, input, mask=None):  # type: ignore
+    def forward(self, input, mask=None, domain_ids=None):  # type: ignore
         if self.use_xmoe:
             input = self.wg_reduction(input)
             with torch.no_grad():
@@ -489,7 +489,7 @@ class Top2Gate(torch.nn.Module):
         self.batch_prioritized_routing = batch_prioritized_routing
         self.use_xmoe = use_xmoe
 
-    def forward(self, input, mask=None):  # type: ignore
+    def forward(self, input, mask=None, domain_ids=None):  # type: ignore
         if self.use_xmoe:
             input = self.wg_reduction(input)
             with torch.no_grad():

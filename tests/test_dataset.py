@@ -10,17 +10,25 @@ if 'torch' not in sys.modules:
     torch = types.ModuleType('torch')
     torch.tensor = lambda *a, **k: a[0]
     torch.utils = types.SimpleNamespace(data=types.SimpleNamespace(Dataset=object, DataLoader=object))
+    torch.nn = types.SimpleNamespace(functional=types.ModuleType('functional'))
+    class _Tensor: pass
+    torch.Tensor = _Tensor
     sys.modules['torch'] = torch
     sys.modules['torch.utils'] = torch.utils
     sys.modules['torch.utils.data'] = torch.utils.data
+    sys.modules['torch.nn'] = torch.nn
+    sys.modules['torch.nn.functional'] = torch.nn.functional
 
 if 'torchvision' not in sys.modules:
     tv = types.ModuleType('torchvision')
     class _T:
         def __init__(self, *a, **k): pass
         def __call__(self, x): return x
+    class _Compose:
+        def __init__(self, *a, **k): pass
+        def __call__(self, x): return x
     tv.transforms = types.SimpleNamespace(
-        Compose=lambda xs: _T(),
+        Compose=_Compose,
         Resize=_T,
         CenterCrop=_T,
         ToTensor=_T,
@@ -46,6 +54,25 @@ if 'transformers' not in sys.modules:
         pass
     tr.PreTrainedTokenizer = PreTrainedTokenizer
     sys.modules['transformers'] = tr
+
+if 'huggingface_hub' not in sys.modules:
+    hh = types.ModuleType('huggingface_hub')
+    hh.snapshot_download = lambda *a, **k: None
+    hh.hf_hub_download = lambda *a, **k: None
+    sys.modules['huggingface_hub'] = hh
+
+if 'safetensors.torch' not in sys.modules:
+    st = types.ModuleType('safetensors.torch')
+    st.load_file = lambda *a, **k: {}
+    sys.modules['safetensors.torch'] = st
+    base = types.ModuleType('safetensors')
+    base.torch = st
+    sys.modules['safetensors'] = base
+
+if 'einops' not in sys.modules:
+    einops = types.ModuleType('einops')
+    einops.rearrange = lambda x, *a, **k: x
+    sys.modules['einops'] = einops
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

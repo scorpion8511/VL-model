@@ -20,6 +20,7 @@ from ..component.multiway_network import MultiwayWrapper, set_split_position
 from ..component.relative_position_bias import RelativePositionBias
 from ..component.xmoe.moe_layer import MOELayer
 from ..component.xmoe.routing import Top1Gate, Top2Gate
+from ..component.xmoe import DomainGate
 
 
 class EncoderLayer(nn.Module):
@@ -52,7 +53,6 @@ class EncoderLayer(nn.Module):
                 ),
             )
         else:
-            assert not self.args.multiway
             if args.moe_top1_expert:
                 gate = Top1Gate(
                     self.embed_dim,
@@ -71,6 +71,8 @@ class EncoderLayer(nn.Module):
                     args.moe_eval_capacity_token_fraction,
                     use_xmoe=args.use_xmoe,
                 )
+            self.default_gate = gate
+            self.domain_gate = DomainGate(args.moe_expert_count)
             experts = make_experts(args, self.embed_dim, self.ffn_dim)
             self.moe_layer = MOELayer(gate, experts, args)
         self.final_layer_norm = MultiwayWrapper(args, LayerNorm(self.embed_dim, eps=args.layernorm_eps))
@@ -113,7 +115,7 @@ class EncoderLayer(nn.Module):
     def residual_connection(self, x, residual):
         return residual * self.alpha + x
 
-    def forward(self, x, encoder_padding_mask, attn_mask=None, rel_pos=None, multiway_split_position=None, incremental_state=None):
+    def forward(self, x, encoder_padding_mask, attn_mask=None, rel_pos=None, multiway_split_position=None, incremental_state=None, domain_ids=None):
         if multiway_split_position is not None:
             assert self.args.multiway
             self.apply(set_split_position(multiway_split_position))
@@ -150,7 +152,11 @@ class EncoderLayer(nn.Module):
             l_aux = None
         else:
             x = x.transpose(0, 1)
-            x, l_aux = self.moe_layer(x)
+            if domain_ids is not None:
+                self.moe_layer.gate = self.domain_gate
+            else:
+                self.moe_layer.gate = self.default_gate
+            x, l_aux = self.moe_layer(x, domain_ids=domain_ids)
             x = x.transpose(0, 1)
 
         if self.drop_path is not None:
@@ -335,6 +341,7 @@ class Encoder(nn.Module):
         features_only=False,
         incremental_state=None,
         positions=None,
+        domain_labels=None,
         **kwargs
     ):
         assert src_tokens is not None or token_embeddings is not None
@@ -370,6 +377,9 @@ class Encoder(nn.Module):
 
         # incremental_state is not None during inference if we use the bidirectional encoder as a generator as in s2s-ft (https://arxiv.org/abs/2110.13640)
         l_aux = []
+        flat_domain = None
+        if domain_labels is not None:
+            flat_domain = domain_labels.view(-1, 1).expand(-1, x.size(1)).reshape(-1)
         for idx, layer in enumerate(self.layers):
             x, l_aux_i = layer(
                 x,
@@ -378,6 +388,7 @@ class Encoder(nn.Module):
                 rel_pos=rel_pos_bias,
                 multiway_split_position=multiway_split_position,
                 incremental_state=incremental_state[idx] if incremental_state is not None else None,
+                domain_ids=flat_domain,
             )
             if return_all_hiddens:
                 assert encoder_states is not None

@@ -135,6 +135,8 @@ def get_args():
         help="Path to encoder weights pretrained in stage one",
     )
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--num-experts", type=int, default=0, help="Number of MoE experts")
+    p.add_argument("--moe-freq", type=int, default=0, help="Insert MoE layer every N blocks")
     return p.parse_args()
 
 
@@ -169,7 +171,11 @@ def main():
         pair_loader = get_pair_loader(args.pair_data, tokenizer, args.batch_size, args.num_workers)
         val_loader = None
 
-    model = create_model("musk_large_patch16_384")
+    model = create_model(
+        "musk_large_patch16_384",
+        moe_expert_count=args.num_experts,
+        moe_freq=args.moe_freq,
+    )
     if args.encoder:
         state = torch.load(args.encoder, map_location="cpu")
         missing = model.beit3.load_state_dict(state, strict=False)
@@ -201,7 +207,12 @@ def main():
         loss_epoch = 0.0
         mlm_epoch = 0.0
         num_batches = 0
-        for images, tokens, padding in pair_loader:
+        for batch in pair_loader:
+            if len(batch) == 4:
+                images, tokens, padding, domain = batch
+            else:
+                images, tokens, padding = batch
+                domain = None
             optimizer.zero_grad()
             images = images.to(accelerator.device)
             tokens = tokens.to(accelerator.device)
@@ -209,14 +220,18 @@ def main():
 
             # ----- Contrastive path -----
             with accelerator.no_sync(model):
-                img_emb, txt_emb = model(
+                img_emb, txt_emb, l_aux_c = model(
                     image=images,
                     text_description=tokens,
                     padding_mask=padding,
                     return_global=True,
+                    domain=domain,
+                    return_l_aux=True,
                 )
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                if l_aux_c is not None:
+                    loss_c = loss_c + l_aux_c
                 accelerator.backward(loss_c)
 
             # ----- Auxiliary MLM -----
@@ -224,7 +239,7 @@ def main():
             inp_tokens = tokens.clone()
             inp_tokens[mask_txt] = mask_token_id
 
-            _, _, img_seq, txt_seq = model(
+            _, _, img_seq, txt_seq, l_aux_mlm = model(
                 image=images,
                 text_description=inp_tokens,
                 padding_mask=padding,
@@ -232,10 +247,14 @@ def main():
                 out_norm=False,
                 return_global=False,
                 return_seq=True,
+                domain=domain,
+                return_l_aux=True,
             )
             dec_out = decoder(txt_seq, img_seq, padding.bool())
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])
+            if l_aux_mlm is not None:
+                loss_mlm = loss_mlm + l_aux_mlm
 
             accelerator.backward(loss_mlm)
             optimizer.step()
@@ -256,26 +275,35 @@ def main():
             val_c = 0.0
             val_mlm = 0.0
             val_batches = 0
-            for images, tokens, padding in val_loader:
+            for batch in val_loader:
+                if len(batch) == 4:
+                    images, tokens, padding, domain = batch
+                else:
+                    images, tokens, padding = batch
+                    domain = None
                 images = images.to(accelerator.device)
                 tokens = tokens.to(accelerator.device)
                 padding = padding.to(accelerator.device)
 
                 with torch.no_grad():
-                    img_emb, txt_emb = model(
+                    img_emb, txt_emb, l_aux_c = model(
                         image=images,
                         text_description=tokens,
                         padding_mask=padding,
                         return_global=True,
+                        domain=domain,
+                        return_l_aux=True,
                     )
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
+                if l_aux_c is not None:
+                    loss_c = loss_c + l_aux_c
 
                 mask_txt = random_mask(tokens.shape, args.mask_ratio, tokens.device) & (~padding)
                 inp_tokens = tokens.clone()
                 inp_tokens[mask_txt] = mask_token_id
                 with torch.no_grad():
-                    _, _, img_seq, txt_seq = model(
+                    _, _, img_seq, txt_seq, l_aux_txt = model(
                         image=images,
                         text_description=inp_tokens,
                         padding_mask=padding,
@@ -283,10 +311,14 @@ def main():
                         out_norm=False,
                         return_global=False,
                         return_seq=True,
+                        domain=domain,
+                        return_l_aux=True,
                     )
                     dec_out = decoder(txt_seq, img_seq, padding.bool())
                     pred = mlm_head(dec_out[mask_txt])
                     loss_mlm = ce_loss(pred, tokens[mask_txt])
+                    if l_aux_txt is not None:
+                        loss_mlm = loss_mlm + l_aux_txt
 
                 val_c += loss_c.item()
                 val_mlm += loss_mlm.item()

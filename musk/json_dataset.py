@@ -10,7 +10,8 @@ only, or ``mode="pair"`` to return ``(image, text)`` tuples.
 """
 
 import json
-from typing import List, Tuple
+from typing import List, Tuple, Dict
+from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -53,6 +54,25 @@ class ImageTextJsonDataset(Dataset):
             ]
         )
         self.tokenizer = tokenizer
+        self.domain_map: Dict[str, int] = {}
+
+        # Build a consistent mapping from domain labels to integer IDs
+        for it in self.items:
+            dom = it.get("domain")
+            if dom is None:
+                img_path = it.get("image")
+                if img_path:
+                    dom = Path(img_path).parent.name
+                else:
+                    txt = it.get("text", "")
+                    dom = txt.split()[0] if txt else ""
+            if isinstance(dom, int):
+                key = str(dom)
+                if key not in self.domain_map:
+                    self.domain_map[key] = dom
+            else:
+                if dom not in self.domain_map:
+                    self.domain_map[dom] = len(self.domain_map)
 
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.items)
@@ -66,17 +86,32 @@ class ImageTextJsonDataset(Dataset):
         tokens, pad = xlm_tokenizer(text.strip(), self.tokenizer)
         return torch.tensor(tokens), torch.tensor(pad, dtype=torch.bool)
 
+    def _infer_domain(self, item: dict) -> int:
+        dom = item.get("domain")
+        if dom is None:
+            image_path = item.get("image")
+            if image_path:
+                dom = Path(image_path).parent.name
+            else:
+                text = item.get("text", "")
+                dom = text.split()[0] if text else ""
+        key = str(dom) if isinstance(dom, int) else dom
+        return self.domain_map.get(key, 0)
+
     def __getitem__(self, idx: int):  # type: ignore[override]
         item = self.items[idx]
         image_path = item.get("image")
         caption = item.get("text")
+        domain = self._infer_domain(item)
 
         if self.mode == "image":
-            return self._load_image(image_path)
+            return self._load_image(image_path), domain
         if self.mode == "text":
-            return self._load_text(caption)
+            return (*self._load_text(caption), domain)
 
-        return (self._load_image(image_path),) + self._load_text(caption)
+        img = self._load_image(image_path)
+        tokens, pad = self._load_text(caption)
+        return img, tokens, pad, domain
 
 
 def get_json_loader(

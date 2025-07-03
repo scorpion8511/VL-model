@@ -13,6 +13,7 @@ import json
 from typing import List, Tuple
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import torchvision
@@ -41,6 +42,8 @@ class ImageTextJsonDataset(Dataset):
         mode: str = "image",
         transform: torchvision.transforms.Compose | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
+        return_patches: bool = False,
+        patch_size: int = 16,
     ) -> None:
         assert mode in {"image", "text", "pair"}
         self.items = _load_json_lines(json_file)
@@ -53,13 +56,19 @@ class ImageTextJsonDataset(Dataset):
             ]
         )
         self.tokenizer = tokenizer
+        self.return_patches = return_patches
+        self.patch_size = patch_size
 
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.items)
 
-    def _load_image(self, path: str) -> torch.Tensor:
+    def _load_image(self, path: str) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
         img = Image.open(path).convert("RGB")
-        return self.transform(img)
+        img_t = self.transform(img)
+        if self.return_patches:
+            patches = F.unfold(img_t.unsqueeze(0), kernel_size=self.patch_size, stride=self.patch_size).squeeze(0).T
+            return img_t, patches
+        return img_t
 
     def _load_text(self, text: str) -> Tuple[torch.Tensor, torch.Tensor]:
         assert self.tokenizer is not None, "Tokenizer required for text mode"
@@ -76,7 +85,11 @@ class ImageTextJsonDataset(Dataset):
         if self.mode == "text":
             return self._load_text(caption)
 
-        return (self._load_image(image_path),) + self._load_text(caption)
+        img = self._load_image(image_path)
+        if self.return_patches:
+            img, patches = img  # type: ignore
+            return (img, patches) + self._load_text(caption)
+        return (img,) + self._load_text(caption)
 
 
 def get_json_loader(
@@ -85,8 +98,16 @@ def get_json_loader(
     batch_size: int,
     num_workers: int,
     tokenizer: PreTrainedTokenizer | None = None,
+    return_patches: bool = False,
+    patch_size: int = 16,
 ) -> DataLoader:
-    dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer)
+    dataset = ImageTextJsonDataset(
+        json_file,
+        mode=mode,
+        tokenizer=tokenizer,
+        return_patches=return_patches,
+        patch_size=patch_size,
+    )
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
 
 
@@ -97,9 +118,17 @@ def get_json_loaders(
     num_workers: int,
     tokenizer: PreTrainedTokenizer | None = None,
     val_split: float = 0.1,
+    return_patches: bool = False,
+    patch_size: int = 16,
 ) -> tuple[DataLoader, DataLoader]:
     """Return training and validation loaders split from a JSON lines dataset."""
-    dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer)
+    dataset = ImageTextJsonDataset(
+        json_file,
+        mode=mode,
+        tokenizer=tokenizer,
+        return_patches=return_patches,
+        patch_size=patch_size,
+    )
     n_val = max(1, int(len(dataset) * val_split))
     n_train = len(dataset) - n_val
     train_set, val_set = torch.utils.data.random_split(dataset, [n_train, n_val])

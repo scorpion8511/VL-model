@@ -56,6 +56,24 @@ class ImageTextJsonDataset(Dataset):
         self.tokenizer = tokenizer
         self.domain_map: Dict[str, int] = {}
 
+        # Build a consistent mapping from domain labels to integer IDs
+        for it in self.items:
+            dom = it.get("domain")
+            if dom is None:
+                img_path = it.get("image")
+                if img_path:
+                    dom = Path(img_path).parent.name
+                else:
+                    txt = it.get("text", "")
+                    dom = txt.split()[0] if txt else ""
+            if isinstance(dom, int):
+                key = str(dom)
+                if key not in self.domain_map:
+                    self.domain_map[key] = dom
+            else:
+                if dom not in self.domain_map:
+                    self.domain_map[dom] = len(self.domain_map)
+
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.items)
 
@@ -69,22 +87,16 @@ class ImageTextJsonDataset(Dataset):
         return torch.tensor(tokens), torch.tensor(pad, dtype=torch.bool)
 
     def _infer_domain(self, item: dict) -> int:
-        domain = item.get("domain")
-        if domain is not None:
-            if isinstance(domain, int):
-                return domain
-            if domain not in self.domain_map:
-                self.domain_map[domain] = len(self.domain_map)
-            return self.domain_map[domain]
-        image_path = item.get("image")
-        if image_path:
-            name = Path(image_path).parent.name
-        else:
-            text = item.get("text", "")
-            name = text.split()[0] if text else ""
-        if name not in self.domain_map:
-            self.domain_map[name] = len(self.domain_map)
-        return self.domain_map[name]
+        dom = item.get("domain")
+        if dom is None:
+            image_path = item.get("image")
+            if image_path:
+                dom = Path(image_path).parent.name
+            else:
+                text = item.get("text", "")
+                dom = text.split()[0] if text else ""
+        key = str(dom) if isinstance(dom, int) else dom
+        return self.domain_map.get(key, 0)
 
     def __getitem__(self, idx: int):  # type: ignore[override]
         item = self.items[idx]

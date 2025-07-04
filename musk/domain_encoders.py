@@ -88,8 +88,8 @@ class DomainEncoderManager(nn.Module):
         """Encode a batch of images using domain-specific encoders."""
         device = images.device
         idxs = self.gate(domains)
-        outs: list[torch.Tensor] = [torch.empty(0, device=device)] * len(domains)
-        for expert_idx in idxs.unique():
+        outs: list[torch.Tensor] = [torch.empty(0, device=device) for _ in domains]
+        for expert_idx in torch.unique(idxs, sorted=True):
             mask = idxs == expert_idx
             if not mask.any():
                 continue

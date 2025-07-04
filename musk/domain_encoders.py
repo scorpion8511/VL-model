@@ -30,8 +30,17 @@ def load_local_encoder(path: str) -> Tuple[None, nn.Module]:
         # ``weights_only=False`` handles older MUSK checkpoints that store
         # objects other than tensors.
         state = torch.load(path, map_location="cpu", weights_only=False)
-    except Exception as e:  # broad catch to rethrow with context
-        raise RuntimeError(f"Failed to load checkpoint '{path}': {e}") from e
+    except Exception as e:
+        # fall back to safetensors format
+        try:
+            from safetensors.torch import load_file as load_safetensors
+
+            state = load_safetensors(path)
+        except Exception:
+            raise RuntimeError(f"Failed to load checkpoint '{path}': {e}") from e
+
+    if hasattr(state, "state_dict"):
+        state = state.state_dict()
 
     model.load_state_dict(state, strict=False)
     return None, model

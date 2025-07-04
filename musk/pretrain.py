@@ -35,6 +35,7 @@ from timm.models import create_model
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from transformers import XLMRobertaTokenizer
+from .domain_encoders import get_domain_encoder
 from .utils import xlm_tokenizer
 from . import modeling  # ensure custom models are registered
 
@@ -94,6 +95,12 @@ def get_args():
         default=None,
         help="Optional path to pretrained encoder weights to initialize stage one",
     )
+    parser.add_argument(
+        "--domain",
+        type=str,
+        default=None,
+        help="Name of domain-specific encoder to initialize the model",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     return parser.parse_args()
 
@@ -143,6 +150,18 @@ def main():
         val_text_loader = None
 
     model = create_model("musk_large_patch16_384")
+    if args.domain:
+        try:
+            _, domain_model = get_domain_encoder(args.domain)
+            state = domain_model.state_dict()
+            missing = model.beit3.load_state_dict(state, strict=False)
+            accelerator.print(f"Initialized encoder from domain '{args.domain}'")
+            if missing.missing_keys:
+                accelerator.print(
+                    f"Missing keys when loading domain encoder: {missing.missing_keys}"
+                )
+        except Exception as e:
+            accelerator.print(f"Failed to load domain encoder '{args.domain}': {e}")
     if args.encoder:
         state = torch.load(args.encoder, map_location="cpu")
         missing = model.beit3.load_state_dict(state, strict=False)

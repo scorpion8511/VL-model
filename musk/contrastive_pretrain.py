@@ -39,6 +39,8 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 import wandb
 
+from .domain_encoders import get_domain_encoder
+
 from .json_dataset import ImageTextJsonDataset
 from .utils import xlm_tokenizer
 from . import modeling  # register MUSK models
@@ -161,6 +163,12 @@ def get_args():
         default=None,
         help="Path to encoder weights pretrained in stage one",
     )
+    p.add_argument(
+        "--domain",
+        type=str,
+        default=None,
+        help="Name of domain-specific encoder to initialize the model",
+    )
     p.add_argument("--num-workers", type=int, default=4)
     return p.parse_args()
 
@@ -183,6 +191,18 @@ def main():
     mask_token_id = tokenizer.convert_tokens_to_ids("<mask>")
 
     model = create_model("musk_large_patch16_384")
+    if args.domain:
+        try:
+            _, domain_model = get_domain_encoder(args.domain)
+            state = domain_model.state_dict()
+            missing = model.beit3.load_state_dict(state, strict=False)
+            accelerator.print(f"Initialized encoder from domain '{args.domain}'")
+            if missing.missing_keys:
+                accelerator.print(
+                    f"Missing keys when loading domain encoder: {missing.missing_keys}"
+                )
+        except Exception as e:
+            accelerator.print(f"Failed to load domain encoder '{args.domain}': {e}")
     patch_size = model.beit3.args.patch_size
     img_size = model.beit3.args.img_size
 

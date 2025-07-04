@@ -47,3 +47,22 @@ and the script prints contrastive and MLM losses for both splits each epoch.
 `musk/models/tokenizer.spm`. Pass `--wandb-project <name>` to log
 training metrics to Weights & Biases.
 Specify `--wandb-project <name>` to log these metrics to Weights & Biases.
+
+## Local domain encoders
+
+Domain specific image encoders are expected to be stored locally. Set `musk.domain_encoders.DOMAIN_ENCODER_PATHS` to point at these directories. Each directory should follow the standard Hugging Face layout containing a `config.json` and model weights.
+
+Example structure:
+
+```text
+models/
+├── xray/
+│   ├── config.json
+│   └── pytorch_model.bin
+├── endoscopy/
+│   ├── config.json
+│   └── pytorch_model.bin
+└── pathology/
+    ├── config.json
+    └── pytorch_model.bin
+```

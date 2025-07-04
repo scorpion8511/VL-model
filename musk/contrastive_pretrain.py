@@ -184,6 +184,7 @@ def main():
 
     model = create_model("musk_large_patch16_384")
     patch_size = model.beit3.args.patch_size
+    img_size = model.beit3.args.img_size
 
     if args.json_data:
         (
@@ -218,7 +219,11 @@ def main():
     mlm_head = nn.Linear(embed_dim, len(tokenizer))
     caption_dec = CaptionDecoder(embed_dim, len(tokenizer)) if args.caption_loss else None
     patch_dec = (
-        PatchDecoder(embed_dim, 3 * patch_size * patch_size, (384 // patch_size) ** 2)
+        PatchDecoder(
+            embed_dim,
+            3 * patch_size * patch_size,
+            (img_size // patch_size) ** 2,
+        )
         if args.recon_loss
         else None
     )

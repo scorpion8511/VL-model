@@ -10,7 +10,7 @@ only, or ``mode="pair"`` to return ``(image, text)`` tuples.
 """
 
 import json
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -53,6 +53,8 @@ class ImageTextJsonDataset(Dataset):
             ]
         )
         self.tokenizer = tokenizer
+        # mapping from domain labels to integer ids
+        self.domain_map: Dict[str, int] = {}
 
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.items)
@@ -65,6 +67,17 @@ class ImageTextJsonDataset(Dataset):
         assert self.tokenizer is not None, "Tokenizer required for text mode"
         tokens, pad = xlm_tokenizer(text.strip(), self.tokenizer)
         return torch.tensor(tokens), torch.tensor(pad, dtype=torch.bool)
+
+    def _infer_domain(self, item: dict) -> int:
+        """Return numeric domain id for the given item."""
+        dom = item["domain"]
+        if isinstance(dom, int):
+            return dom
+        if isinstance(dom, str):
+            if dom not in self.domain_map:
+                self.domain_map[dom] = len(self.domain_map)
+            return self.domain_map[dom]
+        raise ValueError(f"Invalid domain type: {type(dom).__name__}")
 
     def __getitem__(self, idx: int):  # type: ignore[override]
         item = self.items[idx]

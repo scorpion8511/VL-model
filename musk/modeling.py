@@ -203,6 +203,7 @@ def _get_large_config(
         drop_path_rate=drop_path_rate, encoder_embed_dim=1024, encoder_attention_heads=16,
         encoder_ffn_embed_dim=int(1024 * mlp_ratio), encoder_layers=24,
         checkpoint_activations=checkpoint_activations,
+        **kwargs,
     )
 
 @register_model

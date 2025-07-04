@@ -89,6 +89,10 @@ def get_args():
         help="Optional path to save only the encoder weights for stage-two training",
     )
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--moe-freq", type=int, default=0,
+                        help="Insert a MoE layer every N transformer blocks")
+    parser.add_argument("--num-experts", type=int, default=0,
+                        help="Number of experts for MoE layers")
     return parser.parse_args()
 
 
@@ -136,7 +140,12 @@ def main():
         val_image_loader = None
         val_text_loader = None
 
-    model = create_model("musk_large_patch16_384")
+    model = create_model(
+        "musk_large_patch16_384",
+        moe_freq=args.moe_freq,
+        moe_expert_count=args.num_experts,
+        use_xmoe=args.moe_freq > 0 and args.num_experts > 0,
+    )
     unwrapped = accelerator.unwrap_model(model)
     embed_dim = unwrapped.beit3.args.encoder_embed_dim
     patch_size = unwrapped.beit3.args.patch_size

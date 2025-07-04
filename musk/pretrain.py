@@ -88,6 +88,12 @@ def get_args():
         default=None,
         help="Optional path to save only the encoder weights for stage-two training",
     )
+    parser.add_argument(
+        "--encoder",
+        type=str,
+        default=None,
+        help="Optional path to pretrained encoder weights to initialize stage one",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     return parser.parse_args()
 
@@ -137,6 +143,12 @@ def main():
         val_text_loader = None
 
     model = create_model("musk_large_patch16_384")
+    if args.encoder:
+        state = torch.load(args.encoder, map_location="cpu")
+        missing = model.beit3.load_state_dict(state, strict=False)
+        accelerator.print(f"Loaded encoder weights from {args.encoder}")
+        if missing.missing_keys:
+            accelerator.print(f"Missing keys in encoder load: {missing.missing_keys}")
     unwrapped = accelerator.unwrap_model(model)
     embed_dim = unwrapped.beit3.args.encoder_embed_dim
     patch_size = unwrapped.beit3.args.patch_size

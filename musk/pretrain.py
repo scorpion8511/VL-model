@@ -101,6 +101,18 @@ def get_args():
         default=None,
         help="Name of domain-specific encoder to initialize the model",
     )
+    parser.add_argument(
+        "--moe-freq",
+        type=int,
+        default=0,
+        help="Insert a mixture-of-experts layer every N transformer blocks",
+    )
+    parser.add_argument(
+        "--num-experts",
+        type=int,
+        default=0,
+        help="Number of experts to use in MoE layers",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     return parser.parse_args()
 
@@ -149,7 +161,11 @@ def main():
         val_image_loader = None
         val_text_loader = None
 
-    model = create_model("musk_large_patch16_384")
+    model = create_model(
+        "musk_large_patch16_384",
+        moe_freq=args.moe_freq,
+        moe_expert_count=args.num_experts,
+    )
     if args.domain:
         try:
             _, domain_model = get_domain_encoder(args.domain)

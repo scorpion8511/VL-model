@@ -176,6 +176,18 @@ def get_args():
         default=None,
         help="Comma-separated list of domain encoders to use",
     )
+    p.add_argument(
+        "--moe-freq",
+        type=int,
+        default=0,
+        help="Insert a mixture-of-experts layer every N transformer blocks",
+    )
+    p.add_argument(
+        "--num-experts",
+        type=int,
+        default=0,
+        help="Number of experts to use in MoE layers",
+    )
     p.add_argument("--num-workers", type=int, default=4)
     return p.parse_args()
 
@@ -197,7 +209,11 @@ def main():
     tokenizer = XLMRobertaTokenizer(str(tokenizer_path))
     mask_token_id = tokenizer.convert_tokens_to_ids("<mask>")
 
-    model = create_model("musk_large_patch16_384")
+    model = create_model(
+        "musk_large_patch16_384",
+        moe_freq=args.moe_freq,
+        moe_expert_count=args.num_experts,
+    )
     domain_manager = None
     if args.domains:
         domain_list = [d.strip() for d in args.domains.split(",") if d.strip()]

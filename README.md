@@ -31,6 +31,14 @@ Optionally specify `--encoder-out` to save only the shared encoder weights for
 use in stage-two contrastive pretraining.
        --encoder musk_pretrained_encoder.pt \
        --encoder musk_pretrained_encoder.pt \
+Use multiple domain-specific teacher encoders in stage one with `--domains`:
+
+```shell
+accelerate launch -m musk.pretrain \
+       --json-data data.jsonl \
+       --domains xray=/path/xray.pth,patho=/path/patho.pth \
+       --epochs 5 --output musk_pretrained.pt
+```
 accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
        --batch-size 16 --epochs 20 --output musk_stage2.pt
 accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \

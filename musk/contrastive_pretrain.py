@@ -39,7 +39,7 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 import wandb
 
-from .domain_encoders import get_domain_encoder
+from .domain_encoders import get_domain_encoder, load_domain_encoders
 
 from .json_dataset import ImageTextJsonDataset
 from .utils import xlm_tokenizer
@@ -54,6 +54,7 @@ def get_pair_loader(
     num_workers: int,
     return_patches: bool = False,
     patch_size: int = 16,
+    return_domain: bool = False,
 ) -> DataLoader:
     transform = torchvision.transforms.Compose([
         torchvision.transforms.Resize(384, interpolation=3, antialias=True),
@@ -72,6 +73,8 @@ def get_pair_loader(
         if return_patches:
             patches = F.unfold(img_t.unsqueeze(0), kernel_size=patch_size, stride=patch_size).squeeze(0).T
             out = out + (patches,)
+        if return_domain:
+            out = out + (None,)
         return out
 
     dataset = (
@@ -90,6 +93,7 @@ def get_json_pair_loader(
     num_workers: int,
     return_patches: bool = False,
     patch_size: int = 16,
+    return_domain: bool = False,
 ) -> DataLoader:
     dataset = ImageTextJsonDataset(
         json_file,
@@ -97,6 +101,7 @@ def get_json_pair_loader(
         tokenizer=tokenizer,
         return_patches=return_patches,
         patch_size=patch_size,
+        return_domain=return_domain,
     )
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
 
@@ -109,6 +114,7 @@ def get_json_pair_loaders(
     val_split: float = 0.1,
     return_patches: bool = False,
     patch_size: int = 16,
+    return_domain: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     dataset = ImageTextJsonDataset(
         json_file,
@@ -116,6 +122,7 @@ def get_json_pair_loaders(
         tokenizer=tokenizer,
         return_patches=return_patches,
         patch_size=patch_size,
+        return_domain=return_domain,
     )
     n_val = max(1, int(len(dataset) * val_split))
     n_train = len(dataset) - n_val
@@ -164,10 +171,10 @@ def get_args():
         help="Path to encoder weights pretrained in stage one",
     )
     p.add_argument(
-        "--domain",
+        "--domains",
         type=str,
         default=None,
-        help="Name of domain-specific encoder to initialize the model",
+        help="Comma-separated list of domain encoders to use",
     )
     p.add_argument("--num-workers", type=int, default=4)
     return p.parse_args()
@@ -191,18 +198,14 @@ def main():
     mask_token_id = tokenizer.convert_tokens_to_ids("<mask>")
 
     model = create_model("musk_large_patch16_384")
-    if args.domain:
-        try:
-            _, domain_model = get_domain_encoder(args.domain)
-            state = domain_model.state_dict()
-            missing = model.beit3.load_state_dict(state, strict=False)
-            accelerator.print(f"Initialized encoder from domain '{args.domain}'")
-            if missing.missing_keys:
-                accelerator.print(
-                    f"Missing keys when loading domain encoder: {missing.missing_keys}"
-                )
-        except Exception as e:
-            accelerator.print(f"Failed to load domain encoder '{args.domain}': {e}")
+    domain_manager = None
+    if args.domains:
+        domain_list = [d.strip() for d in args.domains.split(",") if d.strip()]
+        if domain_list:
+            domain_manager = load_domain_encoders(domain_list)
+            domain_manager = domain_manager.to(accelerator.device)
+            domain_manager.eval()
+            accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
     patch_size = model.beit3.args.patch_size
     img_size = model.beit3.args.img_size
 
@@ -217,6 +220,7 @@ def main():
             args.num_workers,
             return_patches=args.recon_loss,
             patch_size=patch_size,
+            return_domain=domain_manager is not None,
         )
     else:
         pair_loader = get_pair_loader(
@@ -226,6 +230,7 @@ def main():
             args.num_workers,
             return_patches=args.recon_loss,
             patch_size=patch_size,
+            return_domain=domain_manager is not None,
         )
         val_loader = None
     if args.encoder:
@@ -293,16 +298,26 @@ def main():
         rec_epoch = 0.0
         num_batches = 0
         for batch in pair_loader:
-            if args.recon_loss:
-                images, tokens, padding, patches = batch
+            if domain_manager is not None:
+                if args.recon_loss:
+                    images, tokens, padding, patches, domains = batch
+                else:
+                    images, tokens, padding, domains = batch
             else:
-                images, tokens, padding = batch
+                if args.recon_loss:
+                    images, tokens, padding, patches = batch
+                else:
+                    images, tokens, padding = batch
             optimizer.zero_grad()
             images = images.to(accelerator.device)
             tokens = tokens.to(accelerator.device)
             padding = padding.to(accelerator.device)
             if args.recon_loss:
                 patches = patches.to(accelerator.device)
+            if domain_manager is not None:
+                domains = list(domains)
+                img_emb_dom = domain_manager(images, domains)
+                img_emb_dom = img_emb_dom.to(accelerator.device)
 
             # ----- Contrastive path -----
             with accelerator.no_sync(model):
@@ -312,6 +327,8 @@ def main():
                     padding_mask=padding,
                     return_global=True,
                 )
+                if domain_manager is not None:
+                    img_emb = img_emb_dom
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
                 accelerator.backward(loss_c)
@@ -394,15 +411,24 @@ def main():
             val_rec = 0.0
             val_batches = 0
             for batch in val_loader:
-                if args.recon_loss:
-                    images, tokens, padding, patches = batch
+                if domain_manager is not None:
+                    if args.recon_loss:
+                        images, tokens, padding, patches, domains = batch
+                    else:
+                        images, tokens, padding, domains = batch
                 else:
-                    images, tokens, padding = batch
+                    if args.recon_loss:
+                        images, tokens, padding, patches = batch
+                    else:
+                        images, tokens, padding = batch
                 images = images.to(accelerator.device)
                 tokens = tokens.to(accelerator.device)
                 padding = padding.to(accelerator.device)
                 if args.recon_loss:
                     patches = patches.to(accelerator.device)
+                if domain_manager is not None:
+                    domains = list(domains)
+                    img_emb_dom = domain_manager(images, domains).to(accelerator.device)
 
                 with torch.no_grad():
                     img_emb, txt_emb = model(
@@ -411,6 +437,8 @@ def main():
                         padding_mask=padding,
                         return_global=True,
                     )
+                if domain_manager is not None:
+                    img_emb = img_emb_dom
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 

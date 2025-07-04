@@ -22,14 +22,6 @@ def load_local_encoder(path: str) -> Tuple[None, nn.Module]:
     return None, model
 
 
-# Default file paths for locally stored encoders. These paths can be adjusted
-# if the models are saved elsewhere.
-DOMAIN_ENCODER_FILES: Dict[str, str] = {
-    "xray": "/home/jovyan/work/MUSK/Encoder_factory_dewan/xray.pth",
-    "patho": "/home/jovyan/work/MUSK/Encoder_factory_dewan/patho.pth",
-    "endo": "/home/jovyan/work/MUSK/Encoder_factory_dewan/endo.pth",
-}
-
 DOMAIN_ENCODERS: Dict[str, Callable[[], Tuple[AutoImageProcessor | None, nn.Module]]] = {
     "xray": load_xray_encoder,
 }
@@ -58,8 +50,6 @@ def get_domain_encoder(name: str) -> Tuple[AutoImageProcessor | None, nn.Module]
     """
     if name in DOMAIN_ENCODERS:
         return DOMAIN_ENCODERS[name]()
-    if name in DOMAIN_ENCODER_FILES:
-        return load_local_encoder(DOMAIN_ENCODER_FILES[name])
     if Path(name).is_file():
         return load_local_encoder(name)
     raise ValueError(f"Unknown domain '{name}'")
@@ -68,15 +58,28 @@ def get_domain_encoder(name: str) -> Tuple[AutoImageProcessor | None, nn.Module]
 class DomainEncoderManager(nn.Module):
     """Wrapper holding multiple domain-specific encoders with gating."""
 
-    def __init__(self, names: Iterable[str]):
+    def __init__(self, specs: Iterable[str]):
+        """Create domain encoders from specification strings.
+
+        Each entry in ``specs`` may be either ``"name"`` to load a built-in
+        encoder or ``"name=path"`` to load a checkpoint from ``path`` while using
+        ``name`` for routing.
+        """
         super().__init__()
-        self.names = list(names)
+        self.names: list[str] = []
         self.encoders = nn.ModuleDict()
         self.processors: Dict[str, AutoImageProcessor | None] = {}
-        for n in self.names:
-            proc, model = get_domain_encoder(n)
-            self.processors[n] = proc
-            self.encoders[n] = model
+
+        for spec in specs:
+            if "=" in spec:
+                name, src = spec.split("=", 1)
+            else:
+                name, src = spec, spec
+            self.names.append(name)
+            proc, model = get_domain_encoder(src)
+            self.processors[name] = proc
+            self.encoders[name] = model
+
         self.gate = DomainGate(self.names)
 
     def forward(self, images: torch.Tensor, domains: List[str]) -> torch.Tensor:
@@ -108,6 +111,6 @@ class DomainEncoderManager(nn.Module):
         return torch.stack(outs)
 
 
-def load_domain_encoders(names: Iterable[str]) -> DomainEncoderManager:
-    """Convenience function to create :class:`DomainEncoderManager`."""
-    return DomainEncoderManager(list(names))
+def load_domain_encoders(specs: Iterable[str]) -> DomainEncoderManager:
+    """Create :class:`DomainEncoderManager` from specification strings."""
+    return DomainEncoderManager(list(specs))

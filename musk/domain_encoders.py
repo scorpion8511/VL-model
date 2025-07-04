@@ -17,7 +17,9 @@ def load_xray_encoder() -> Tuple[AutoImageProcessor, AutoModel]:
 def load_local_encoder(path: str) -> Tuple[None, nn.Module]:
     """Load a MUSK encoder from a local ``.pth`` checkpoint."""
     model = create_model("musk_large_patch16_384")
-    state = torch.load(path, map_location="cpu")
+    # use ``weights_only=False`` since MUSK checkpoints may contain full pickled objects
+    # and recent PyTorch defaults to ``weights_only=True``
+    state = torch.load(path, map_location="cpu", weights_only=False)
     model.load_state_dict(state, strict=False)
     return None, model
 

@@ -15,11 +15,24 @@ def load_xray_encoder() -> Tuple[AutoImageProcessor, AutoModel]:
 
 
 def load_local_encoder(path: str) -> Tuple[None, nn.Module]:
-    """Load a MUSK encoder from a local ``.pth`` checkpoint."""
+    """Load a MUSK encoder from a local ``.pth`` checkpoint.
+
+    ``torch.load`` is wrapped in a ``try`` block so we can surface a clearer
+    error when the file is not a valid PyTorch checkpoint. This often manifests
+    as ``UnpicklingError: invalid load key`` when the path points to an invalid
+    or corrupted file.
+    """
+    if not Path(path).is_file():
+        raise FileNotFoundError(path)
+
     model = create_model("musk_large_patch16_384")
-    # use ``weights_only=False`` since MUSK checkpoints may contain full pickled objects
-    # and recent PyTorch defaults to ``weights_only=True``
-    state = torch.load(path, map_location="cpu", weights_only=False)
+    try:
+        # ``weights_only=False`` handles older MUSK checkpoints that store
+        # objects other than tensors.
+        state = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as e:  # broad catch to rethrow with context
+        raise RuntimeError(f"Failed to load checkpoint '{path}': {e}") from e
+
     model.load_state_dict(state, strict=False)
     return None, model
 

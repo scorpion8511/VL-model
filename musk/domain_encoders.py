@@ -106,6 +106,10 @@ class DomainEncoderManager(nn.Module):
 
         self.gate = DomainGate(self.names)
 
+    def indices(self, domains: List[str]) -> torch.Tensor:
+        """Return the expert index for each domain in ``domains``."""
+        return self.gate(domains)
+
     def forward(self, images: torch.Tensor, domains: List[str]) -> torch.Tensor:
         """Encode a batch of images using domain-specific encoders."""
         device = images.device
@@ -125,11 +129,7 @@ class DomainEncoderManager(nn.Module):
             else:
                 inp = imgs.to(device)
             out = enc(inp)
-            feats = (
-                out.last_hidden_state[:, 0]
-                if hasattr(out, "last_hidden_state")
-                else out[0]
-            )
+            feats = out.last_hidden_state[:, 0] if hasattr(out, "last_hidden_state") else out[0]
             for i, f in zip(mask.nonzero(as_tuple=True)[0].tolist(), feats):
                 outs[i] = f
         return torch.stack(outs)

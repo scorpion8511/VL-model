@@ -30,5 +30,8 @@ def test_domain_encoder_manager_routing():
     assert feats[0, 0] == 1
     assert feats[1, 0] == 2
     assert feats[2, 0] == 1
+
+    idx = mgr.indices(["b", "a"])
+    assert idx.tolist() == [1, 0]
     DOMAIN_ENCODERS.clear()
     DOMAIN_ENCODERS.update(original)

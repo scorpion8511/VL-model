@@ -44,7 +44,11 @@ def collect_embeddings(
         for batch in loader:
             if return_domain:
                 images, dom = batch
-                domains.extend([str(d) for d in dom])
+                for d in dom:
+                    if d is None:
+                        domains.append("unknown")
+                    else:
+                        domains.append(str(d))
             else:
                 images = batch
             images = images.to(device)
@@ -75,6 +79,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     model.to(device)
 
     feats, labels = collect_embeddings(model, loader, device, args.return_domain)
+
+    if labels:
+        uniq = sorted(set(labels))
+        counts = {u: labels.count(u) for u in uniq}
+        print("Domain distribution:", counts)
 
     # Run clustering and dimensionality reduction only when optional
     # dependencies are available.  We import them lazily so the script can still

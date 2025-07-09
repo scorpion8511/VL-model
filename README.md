@@ -62,3 +62,6 @@ python -m musk.umap_json \
     --output umap.png
     # add --return-domain when the JSON includes a "domain" key
 ```
+
+With `--return-domain`, points from different domains are displayed in
+distinct colors.

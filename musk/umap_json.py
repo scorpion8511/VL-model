@@ -104,9 +104,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     plt.figure(figsize=(6, 6))
     if labels:
         labels_arr = np.array(labels)
-        for lab in sorted(set(labels)):
+        uniq = sorted(set(labels))
+        cmap = plt.get_cmap("tab20", len(uniq))
+        for idx, lab in enumerate(uniq):
             mask = labels_arr == lab
-            plt.scatter(proj[mask, 0], proj[mask, 1], s=6, label=str(lab))
+            plt.scatter(
+                proj[mask, 0],
+                proj[mask, 1],
+                s=6,
+                label=str(lab),
+                c=[cmap(idx)],
+            )
         plt.legend()
     else:
         plt.scatter(proj[:, 0], proj[:, 1], s=6)

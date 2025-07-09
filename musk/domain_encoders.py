@@ -1,4 +1,4 @@
-from typing import Tuple, Callable, Dict, Iterable, List
+from typing import Tuple, Callable, Dict, Iterable, List, Sequence
 from pathlib import Path
 import torch
 import torch.nn as nn
@@ -49,6 +49,20 @@ def load_local_encoder(path: str) -> Tuple[None, nn.Module]:
 DOMAIN_ENCODERS: Dict[str, Callable[[], Tuple[AutoImageProcessor | None, nn.Module]]] = {
     "xray": load_xray_encoder,
 }
+
+
+def parse_domain_list(arg: Sequence[str] | str | None) -> List[str]:
+    """Parse a ``--domains`` argument into a list of specification strings.
+
+    The CLI may provide the value either as a single comma-separated string or
+    as a sequence of tokens when users include spaces. This helper handles both
+    cases and strips extraneous whitespace.
+    """
+    if not arg:
+        return []
+    if isinstance(arg, (list, tuple)):
+        arg = " ".join(arg)
+    return [p.strip() for p in str(arg).split(',') if p.strip()]
 
 
 class DomainGate(nn.Module):

@@ -39,7 +39,7 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 import wandb
 
-from .domain_encoders import get_domain_encoder, load_domain_encoders
+from .domain_encoders import get_domain_encoder, load_domain_encoders, parse_domain_list
 
 from .json_dataset import ImageTextJsonDataset
 from .utils import xlm_tokenizer
@@ -173,6 +173,7 @@ def get_args():
     p.add_argument(
         "--domains",
         type=str,
+        nargs="+",
         default=None,
         help="Comma-separated list of domain encoders to use",
     )
@@ -216,7 +217,7 @@ def main():
     )
     domain_manager = None
     if args.domains:
-        domain_list = [d.strip() for d in args.domains.split(",") if d.strip()]
+        domain_list = parse_domain_list(args.domains)
         if domain_list:
             domain_manager = load_domain_encoders(domain_list)
             domain_manager = domain_manager.to(accelerator.device)

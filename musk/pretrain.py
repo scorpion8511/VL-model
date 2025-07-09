@@ -35,7 +35,7 @@ from timm.models import create_model
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from transformers import XLMRobertaTokenizer
-from .domain_encoders import get_domain_encoder, load_domain_encoders
+from .domain_encoders import get_domain_encoder, load_domain_encoders, parse_domain_list
 from .utils import xlm_tokenizer
 from . import modeling  # ensure custom models are registered
 
@@ -104,6 +104,7 @@ def get_args():
     parser.add_argument(
         "--domains",
         type=str,
+        nargs="+",
         default=None,
         help="Comma-separated list of additional domain encoders for distillation",
     )
@@ -143,7 +144,7 @@ def main():
     if args.domains:
         if not args.json_data:
             raise ValueError("--domains requires --json-data dataset with domain field")
-        domain_list = [d.strip() for d in args.domains.split(',') if d.strip()]
+        domain_list = parse_domain_list(args.domains)
         if domain_list:
             domain_manager = load_domain_encoders(domain_list)
             domain_manager = domain_manager.to(accelerator.device)

@@ -22,6 +22,9 @@ import torch
 from torch.utils.data import DataLoader
 from timm.models import create_model
 
+# Importing modeling registers MUSK architectures with timm
+from . import modeling  # noqa: F401
+
 from .json_dataset import ImageTextJsonDataset
 from .utils import load_model_and_may_interpolate
 

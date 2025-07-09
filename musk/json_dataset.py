@@ -41,10 +41,12 @@ class ImageTextJsonDataset(Dataset):
         mode: str = "image",
         transform: torchvision.transforms.Compose | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
+        return_domain: bool = False,
     ) -> None:
         assert mode in {"image", "text", "pair"}
         self.items = _load_json_lines(json_file)
         self.mode = mode
+        self.return_domain = return_domain
         self.transform = transform or torchvision.transforms.Compose(
             [
                 torchvision.transforms.Resize(384, interpolation=3, antialias=True),
@@ -72,7 +74,10 @@ class ImageTextJsonDataset(Dataset):
         caption = item.get("text")
 
         if self.mode == "image":
-            return self._load_image(image_path)
+            image = self._load_image(image_path)
+            if self.return_domain:
+                return image, item.get("domain")
+            return image
         if self.mode == "text":
             return self._load_text(caption)
 
@@ -85,8 +90,9 @@ def get_json_loader(
     batch_size: int,
     num_workers: int,
     tokenizer: PreTrainedTokenizer | None = None,
+    return_domain: bool = False,
 ) -> DataLoader:
-    dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer)
+    dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer, return_domain=return_domain)
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
 
 
@@ -97,9 +103,10 @@ def get_json_loaders(
     num_workers: int,
     tokenizer: PreTrainedTokenizer | None = None,
     val_split: float = 0.1,
+    return_domain: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     """Return training and validation loaders split from a JSON lines dataset."""
-    dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer)
+    dataset = ImageTextJsonDataset(json_file, mode=mode, tokenizer=tokenizer, return_domain=return_domain)
     n_val = max(1, int(len(dataset) * val_split))
     n_train = len(dataset) - n_val
     train_set, val_set = torch.utils.data.random_split(dataset, [n_train, n_val])

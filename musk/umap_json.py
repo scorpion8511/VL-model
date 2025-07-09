@@ -76,12 +76,23 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     feats, labels = collect_embeddings(model, loader, device, args.return_domain)
 
-    # Run clustering and UMAP only when sklearn/umap are available.
+    # Run clustering and dimensionality reduction only when optional
+    # dependencies are available.  We import them lazily so the script can still
+    # be used to simply extract embeddings without requiring these packages.
     from sklearn.cluster import KMeans
     from sklearn.metrics import v_measure_score
-    import umap
     import matplotlib.pyplot as plt
     import numpy as np
+
+    try:
+        import umap
+        UMAP = getattr(umap, "UMAP", None)
+        if UMAP is None:
+            from umap.umap_ import UMAP  # type: ignore
+    except Exception as e:  # pragma: no cover - exercised only if missing
+        raise ImportError(
+            "UMAP is required to run this script; install the 'umap-learn' package"
+        ) from e
 
     if labels:
         n_clusters = len(set(labels))
@@ -89,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         v_score = v_measure_score(labels, km.labels_)
         print(f"V-measure: {v_score:.3f}")
 
-    proj = umap.UMAP(random_state=42).fit_transform(feats.numpy())
+    proj = UMAP(random_state=42).fit_transform(feats.numpy())
     plt.figure(figsize=(6, 6))
     if labels:
         labels_arr = np.array(labels)

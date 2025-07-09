@@ -50,7 +50,9 @@ Specify `--wandb-project <name>` to log these metrics to Weights & Biases.
 
 ### UMAP visualization
 
-Generate a 2‑D embedding plot from a JSON lines file of images:
+Generate a 2‑D embedding plot from a JSON lines file of images.
+The script requires the optional packages `umap-learn`, `numpy`,
+`matplotlib`, and `scikit-learn` for plotting:
 
 ```shell
 python -m musk.umap_json \
@@ -58,4 +60,5 @@ python -m musk.umap_json \
     --checkpoint musk_stage2.pt \
     --arch musk_large_patch16_384 \
     --output umap.png
+    # add --return-domain when the JSON includes a "domain" key
 ```

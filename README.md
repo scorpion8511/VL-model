@@ -39,6 +39,19 @@ accelerate launch -m musk.pretrain \
        --domain /path/endo.pth --epochs 5 --output musk_pretrained.pt
 ```
 
+Built-in domain encoders are available for X-ray and MRI images:
+
+```python
+from transformers import AutoImageProcessor, AutoModel
+processor = AutoImageProcessor.from_pretrained("microsoft/rad-dino")
+model = AutoModel.from_pretrained("microsoft/rad-dino")
+
+from diffusers.models import AutoencoderKL
+autoencoder = AutoencoderKL.from_pretrained("microsoft/mri-autoencoder-v0.1")
+```
+
+Use `--domain xray` or `--domain mri` to initialize from these defaults.
+
 Use multiple domain teacher encoders for distillation with `--domains`:
 
 ```shell

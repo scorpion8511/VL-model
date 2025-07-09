@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from transformers import AutoImageProcessor, AutoModel
+from diffusers.models import AutoencoderKL
 from timm.models import create_model
 
 
@@ -12,6 +13,12 @@ def load_xray_encoder() -> Tuple[AutoImageProcessor, AutoModel]:
     processor = AutoImageProcessor.from_pretrained("microsoft/rad-dino")
     model = AutoModel.from_pretrained("microsoft/rad-dino")
     return processor, model
+
+
+def load_mri_encoder() -> Tuple[None, AutoencoderKL]:
+    """Load the pretrained encoder for MRI images."""
+    model = AutoencoderKL.from_pretrained("microsoft/mri-autoencoder-v0.1")
+    return None, model
 
 
 def load_local_encoder(path: str) -> Tuple[None, nn.Module]:
@@ -48,6 +55,7 @@ def load_local_encoder(path: str) -> Tuple[None, nn.Module]:
 
 DOMAIN_ENCODERS: Dict[str, Callable[[], Tuple[AutoImageProcessor | None, nn.Module]]] = {
     "xray": load_xray_encoder,
+    "mri": load_mri_encoder,
 }
 
 

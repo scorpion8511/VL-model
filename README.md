@@ -1,4 +1,3 @@
-
 After stage-one masked modeling, MUSK aligns modalities with a contrastive
 objective on paired image–text data. The repository provides
 `musk.contrastive_pretrain` as a lightweight reference.
@@ -19,31 +18,66 @@ accelerate launch -m musk.contrastive_pretrain \
        --epochs 20 --output musk_stage2.pt
 ```
 
-The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss
-via a cross-attention decoder and reports both losses every epoch.
-training when available. The scripts configure DDP with
-`find_unused_parameters=True` to accommodate the two-step loss computation.
-       --epochs 5 --output musk_pretrained.pt \
-       --encoder-out musk_pretrained_encoder.pt
-       --epochs 5 --output musk_pretrained.pt \
-       --encoder-out musk_pretrained_encoder.pt
-Optionally specify `--encoder-out` to save only the shared encoder weights for
-use in stage-two contrastive pretraining.
-       --encoder musk_pretrained_encoder.pt \
-       --encoder musk_pretrained_encoder.pt \
-accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
-       --batch-size 16 --epochs 20 --output musk_stage2.pt
-accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
-       --batch-size 16 --epochs 20 --output musk_stage2.pt
-When a JSON file is used, the loader automatically reserves 10% of the samples
-for validation and reports average MIM and MLM losses on this split each epoch.
+The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss.
+Enable caption generation or image reconstruction objectives with `--caption-loss`
+and `--recon-loss`.
 
-Use `musk.json_dataset.get_json_loaders` to obtain training and validation loaders from the same file:
+Stage-one pretraining example:
+
+```shell
+accelerate launch -m musk.pretrain \
+       --json-data data.jsonl \
+       --epochs 5 --output musk_pretrained.pt \
+       --encoder-out musk_pretrained_encoder.pt
+```
+
+Initialize from a domain-specific checkpoint:
+
+```shell
+accelerate launch -m musk.pretrain \
+       --json-data data.jsonl \
+       --domain /path/endo.pth --epochs 5 --output musk_pretrained.pt
+```
+
+Built-in domain encoders are available for X-ray and MRI images:
+
+```python
+from transformers import AutoImageProcessor, AutoModel
+processor = AutoImageProcessor.from_pretrained("microsoft/rad-dino")
+model = AutoModel.from_pretrained("microsoft/rad-dino")
+
+from diffusers.models import AutoencoderKL
+autoencoder = AutoencoderKL.from_pretrained("microsoft/mri-autoencoder-v0.1")
+```
+
+Use `--domain xray` or `--domain mri` to initialize from these defaults.
+
+Use multiple domain teacher encoders for distillation with `--domains`:
+
+```shell
+accelerate launch -m musk.pretrain \
+       --json-data data.jsonl \
+       --domains xray=/path/xray.pth,patho=/path/patho.pth \
+       --epochs 5 --output musk_pretrained.pt
+```
+
+After stage one run contrastive pretraining:
+
+```shell
+accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
+       --batch-size 16 --epochs 20 --output musk_stage2.pt \
+       --encoder musk_pretrained_encoder.pt
+```
+
+When a JSON file is used, 10% of the samples are held out for validation and the
+script reports average losses on this split each epoch. Obtain loaders
+programmatically:
+
+```python
 from musk.json_dataset import get_json_loaders
 train_img_loader, val_img_loader = get_json_loaders("data.jsonl", mode="image", batch_size=64, num_workers=4)
 train_txt_loader, val_txt_loader = get_json_loaders("data.jsonl", mode="text", batch_size=64, num_workers=4, tokenizer=tokenizer)
-When `--json-data` is specified, 10% of the pairs are held out for validation
-and the script prints contrastive and MLM losses for both splits each epoch.
-`musk/models/tokenizer.spm`. Pass `--wandb-project <name>` to log
-training metrics to Weights & Biases.
-Specify `--wandb-project <name>` to log these metrics to Weights & Biases.
+```
+
+Specify `--wandb-project <name>` to log metrics to Weights & Biases. The tokenizer
+file is located at `musk/models/tokenizer.spm`.

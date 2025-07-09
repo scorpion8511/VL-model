@@ -35,6 +35,7 @@ from timm.models import create_model
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from transformers import XLMRobertaTokenizer
+from .domain_encoders import get_domain_encoder, load_domain_encoders, parse_domain_list
 from .utils import xlm_tokenizer
 from . import modeling  # ensure custom models are registered
 
@@ -88,6 +89,43 @@ def get_args():
         default=None,
         help="Optional path to save only the encoder weights for stage-two training",
     )
+    parser.add_argument(
+        "--encoder",
+        type=str,
+        default=None,
+        help="Optional path to pretrained encoder weights to initialize stage one",
+    )
+    parser.add_argument(
+        "--domain",
+        type=str,
+        default=None,
+        help="Name of domain-specific encoder to initialize the model",
+    )
+    parser.add_argument(
+        "--domains",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Comma-separated list of additional domain encoders for distillation",
+    )
+    parser.add_argument(
+        "--distill-weight",
+        type=float,
+        default=1.0,
+        help="Weight for distillation loss from domain encoders",
+    )
+    parser.add_argument(
+        "--moe-freq",
+        type=int,
+        default=0,
+        help="Insert a mixture-of-experts layer every N transformer blocks",
+    )
+    parser.add_argument(
+        "--num-experts",
+        type=int,
+        default=0,
+        help="Number of experts to use in MoE layers",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     return parser.parse_args()
 
@@ -101,6 +139,17 @@ def main():
     run = None
     if args.wandb_project and accelerator.is_main_process:
         run = wandb.init(project=args.wandb_project)
+
+    domain_manager = None
+    if args.domains:
+        if not args.json_data:
+            raise ValueError("--domains requires --json-data dataset with domain field")
+        domain_list = parse_domain_list(args.domains)
+        if domain_list:
+            domain_manager = load_domain_encoders(domain_list)
+            domain_manager = domain_manager.to(accelerator.device)
+            domain_manager.eval()
+            accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
 
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")
@@ -119,6 +168,7 @@ def main():
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             tokenizer=None,
+            return_domain=domain_manager is not None,
         )
         (
             text_loader,
@@ -129,6 +179,7 @@ def main():
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             tokenizer=tokenizer,
+            return_domain=False,
         )
     else:
         image_loader = get_image_loader(args.image_data, args.batch_size, args.num_workers)
@@ -136,7 +187,29 @@ def main():
         val_image_loader = None
         val_text_loader = None
 
-    model = create_model("musk_large_patch16_384")
+    model = create_model(
+        "musk_large_patch16_384",
+        moe_freq=args.moe_freq,
+        moe_expert_count=args.num_experts,
+    )
+    if args.domain:
+        try:
+            _, domain_model = get_domain_encoder(args.domain)
+            state = domain_model.state_dict()
+            missing = model.beit3.load_state_dict(state, strict=False)
+            accelerator.print(f"Initialized encoder from domain '{args.domain}'")
+            if missing.missing_keys:
+                accelerator.print(
+                    f"Missing keys when loading domain encoder: {missing.missing_keys}"
+                )
+        except Exception as e:
+            accelerator.print(f"Failed to load domain encoder '{args.domain}': {e}")
+    if args.encoder:
+        state = torch.load(args.encoder, map_location="cpu")
+        missing = model.beit3.load_state_dict(state, strict=False)
+        accelerator.print(f"Loaded encoder weights from {args.encoder}")
+        if missing.missing_keys:
+            accelerator.print(f"Missing keys in encoder load: {missing.missing_keys}")
     unwrapped = accelerator.unwrap_model(model)
     embed_dim = unwrapped.beit3.args.encoder_embed_dim
     patch_size = unwrapped.beit3.args.patch_size
@@ -164,7 +237,11 @@ def main():
         mim_loss_epoch = 0.0
         mlm_loss_epoch = 0.0
         num_batches = 0
-        for images, (tokens, padding) in zip(image_loader, text_loader):
+        for img_data, (tokens, padding) in zip(image_loader, text_loader):
+            if domain_manager is not None:
+                images, domains = img_data
+            else:
+                images = img_data
             optimizer.zero_grad()
 
             # ----- Masked Image Modeling -----
@@ -172,18 +249,22 @@ def main():
             num_patches = (H // patch_size) * (W // patch_size)
             mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
             with accelerator.no_sync(model):
-                _, _, img_seq, _ = model(
+                img_cls, _, img_seq, _ = model(
                     image=images,
                     vision_mask=mask_img,
                     with_head=False,
                     out_norm=False,
-                    return_global=False,
+                    return_global=domain_manager is not None,
                     return_seq=True,
                 )
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
                 loss_img = mse_loss(pred, target)
+                if domain_manager is not None:
+                    with torch.no_grad():
+                        teach = domain_manager(images, list(domains)).to(images.device)
+                    loss_img = loss_img + args.distill_weight * mse_loss(img_cls, teach)
                 accelerator.backward(loss_img)
 
             # ----- Masked Language Modeling -----
@@ -221,23 +302,31 @@ def main():
             val_mim = 0.0
             val_mlm = 0.0
             val_batches = 0
-            for images, (tokens, padding) in zip(val_image_loader, val_text_loader):
+            for img_data, (tokens, padding) in zip(val_image_loader, val_text_loader):
+                if domain_manager is not None:
+                    images, domains = img_data
+                else:
+                    images = img_data
                 B, _, H, W = images.shape
                 num_patches = (H // patch_size) * (W // patch_size)
                 mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
                 with torch.no_grad():
-                    _, _, img_seq, _ = model(
+                    img_cls, _, img_seq, _ = model(
                         image=images,
                         vision_mask=mask_img,
                         with_head=False,
                         out_norm=False,
-                        return_global=False,
+                        return_global=domain_manager is not None,
                         return_seq=True,
                     )
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
                 loss_img = mse_loss(pred, target)
+                if domain_manager is not None:
+                    with torch.no_grad():
+                        teach = domain_manager(images, list(domains)).to(images.device)
+                    loss_img = loss_img + args.distill_weight * mse_loss(img_cls, teach)
 
                 tokens = tokens.to(images.device)
                 padding = padding.to(images.device)

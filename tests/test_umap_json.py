@@ -12,6 +12,7 @@ from musk.umap_json import (
     assign_kmeans,
     save_kmeans,
     load_kmeans,
+    apply_domain_map,
 )
 
 
@@ -37,3 +38,10 @@ def test_cluster_labels(tmp_path: Path):
     loaded = load_kmeans(model_path)
     assigned = assign_kmeans(emb, loaded)
     assert assigned == labels
+
+
+def test_apply_domain_map():
+    labels = [0, 1, "2", "x"]
+    mapping = {"0": "foo", "1": "bar", "2": "baz"}
+    mapped = apply_domain_map(labels, mapping)
+    assert mapped == ["foo", "bar", "baz", "x"]

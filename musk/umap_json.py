@@ -69,11 +69,13 @@ def collect_embeddings(json_file: str, model_path: Optional[str] = None) -> Tupl
 
     tokenizer_path = Path(__file__).resolve().parent / "models" / "tokenizer.spm"
     tokenizer = None
-    transform = T.Compose([
-        T.Resize(384, interpolation=3, antialias=True),
-        T.CenterCrop((384, 384)),
-        T.ToTensor(),
-    ])
+    transform = T.Compose(
+        [
+            T.Resize(384, interpolation=3, antialias=True),
+            T.CenterCrop((384, 384)),
+            T.ToTensor(),
+        ]
+    )
 
     for it in items:
         if "image" in it:
@@ -106,6 +108,7 @@ def collect_embeddings(json_file: str, model_path: Optional[str] = None) -> Tupl
 
 def _dist_sq(a: List[float], b: List[float]) -> float:
     return sum((x - y) ** 2 for x, y in zip(a, b))
+
 
 def kmeans_cluster(
     x: List[List[float]],
@@ -153,6 +156,12 @@ def load_kmeans(path: str) -> List[List[float]]:
     else:
         centroids = data
     return [[float(v) for v in c] for c in centroids]
+
+
+def apply_domain_map(labels: List, mapping: dict[str, str]) -> List[str]:
+    """Map domain identifiers to human-friendly names."""
+    mapping_str = {str(k): v for k, v in mapping.items()}
+    return [mapping_str.get(str(l), str(l)) for l in labels]
 
 
 def _entropy(labels: List) -> float:
@@ -216,6 +225,7 @@ def get_args() -> argparse.Namespace:
     p.add_argument("--cluster-domains", type=int, metavar="k", default=None, help="Cluster embeddings into k groups")
     p.add_argument("--kmeans-model", type=str, default=None, help="Path to trained k-means .pth file")
     p.add_argument("--embedding-model", type=str, default=None, help="Trained MUSK .pth to compute embeddings")
+    p.add_argument("--domain-map", type=str, default=None, help="JSON mapping of domain id to name")
     return p.parse_args()
 
 
@@ -224,6 +234,13 @@ def main() -> None:
     json_path = args.json_data or args.json_file
     if json_path is None:
         raise SystemExit("JSON file must be specified")
+
+    domain_map = None
+    if args.domain_map:
+        with open(args.domain_map, "r") as f:
+            mapping_raw = json.load(f)
+        # normalize keys to strings
+        domain_map = {str(k): v for k, v in mapping_raw.items()}
 
     embeddings, domains = collect_embeddings(json_path, args.embedding_model)
     colour_labels = None
@@ -243,8 +260,11 @@ def main() -> None:
             print(f"V-measure: {score:.3f}")
     elif domains is not None:
         colour_labels = domains
+    plot_labels = colour_labels
+    if domain_map and colour_labels is not None:
+        plot_labels = [domain_map.get(str(l), str(l)) for l in colour_labels]
     try:
-        plot_umap(embeddings, colour_labels, args.output)
+        plot_umap(embeddings, plot_labels, args.output)
     except ImportError as e:
         raise RuntimeError("Plotting requires 'umap-learn' and 'matplotlib'") from e
 

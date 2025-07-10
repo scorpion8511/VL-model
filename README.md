@@ -59,15 +59,16 @@ V-measure evaluation.
 With `--cluster-domains <k>` the script clusters the embeddings using KMeans
 before plotting and reports the V-measure when true domain labels are present.
 Use `--kmeans-model model.pth` to load or save trained centroids.
+Pass `--domain-map mapping.json` to replace numeric labels with human-readable names in the legend.
 
 Example:
 
 ```shell
 # compute embeddings with a checkpoint and cluster
 python -m musk.umap_json --json-data data.jsonl --embedding-model musk_pretrained.pt \
-       --cluster-domains 3 --output umap.png
+       --cluster-domains 3 --domain-map domains.json --output umap.png
 
 # train clusters and save centroids
 python -m musk.umap_json data.jsonl --cluster-domains 3 --kmeans-model kmeans.pth \
-       --output umap.png
+       --domain-map domains.json --output umap.png
 ```

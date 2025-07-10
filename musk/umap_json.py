@@ -122,7 +122,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 proj[mask, 1],
                 s=6,
                 label=str(lab),
-                c=[cmap(idx)],
+                color=cmap(idx),
             )
         plt.legend()
     else:

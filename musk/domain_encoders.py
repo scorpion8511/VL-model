@@ -157,14 +157,24 @@ class DomainEncoderManager(nn.Module):
             else:
                 inp = imgs.to(device)
             out = enc(inp)
+            # HuggingFace models typically return objects containing the
+            # hidden states while Diffusers autoencoders return
+            # ``DecoderOutput`` or ``AutoencoderKLOutput`` with ``sample`` or
+            # ``latent_dist`` attributes. Handle these cases in order of
+            # specificity before falling back to tensors or tuples.
+
             if hasattr(out, "last_hidden_state"):
                 feats = out.last_hidden_state[:, 0]
+            elif hasattr(out, "latent_dist"):
+                feats = out.latent_dist.mean
+            elif hasattr(out, "sample"):
+                feats = out.sample
             elif isinstance(out, (tuple, list)):
-                out = out[0]
-                feats = out
+                feats = out[0]
             else:
                 feats = out
-            if feats.dim() > 2:
+
+            if isinstance(feats, torch.Tensor) and feats.dim() > 2:
                 feats = feats.mean(dim=(2, 3))
             for i, f in zip(mask.nonzero(as_tuple=True)[0].tolist(), feats):
                 outs[i] = f

@@ -58,6 +58,7 @@ def collect_embeddings(json_file: str, model_path: Optional[str] = None) -> Tupl
     import torchvision.transforms as T
     from transformers import XLMRobertaTokenizer
     from timm.models import create_model
+    from . import modeling  # register MUSK models with timm
     from .utils import xlm_tokenizer, load_model_and_may_interpolate
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

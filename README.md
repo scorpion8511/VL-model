@@ -47,3 +47,17 @@ and the script prints contrastive and MLM losses for both splits each epoch.
 `musk/models/tokenizer.spm`. Pass `--wandb-project <name>` to log
 training metrics to Weights & Biases.
 Specify `--wandb-project <name>` to log these metrics to Weights & Biases.
+
+## UMAP visualization
+
+Use `musk.umap_json` to visualize embeddings stored in a JSON lines file. Each line
+should contain an `embedding` array and may include a `domain` label.
+With `--cluster-domains <k>` the script clusters the embeddings using
+KMeans before plotting and reports the V-measure when true domain labels are
+present.
+
+Example:
+
+```shell
+python -m musk.umap_json data.jsonl --cluster-domains 3 --output umap.png
+```

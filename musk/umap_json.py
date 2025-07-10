@@ -11,7 +11,10 @@ import argparse
 import json
 import math
 import random
+import os
 from typing import List, Optional, Tuple
+
+import pickle
 
 
 def _load_json_lines(path: str) -> List[dict]:
@@ -43,8 +46,13 @@ def collect_embeddings(json_file: str) -> Tuple[List[List[float]], Optional[List
 def _dist_sq(a: List[float], b: List[float]) -> float:
     return sum((x - y) ** 2 for x, y in zip(a, b))
 
-
-def kmeans_cluster(x: List[List[float]], k: int, n_iter: int = 20, seed: int = 0) -> List[int]:
+def kmeans_cluster(
+    x: List[List[float]],
+    k: int,
+    n_iter: int = 20,
+    seed: int = 0,
+    return_centroids: bool = False,
+) -> List[int] | Tuple[List[int], List[List[float]]]:
     """Simple k-means clustering implemented without external dependencies."""
     random.seed(seed)
     centroids = [x[i][:] for i in random.sample(range(len(x)), k)]
@@ -60,7 +68,30 @@ def kmeans_cluster(x: List[List[float]], k: int, n_iter: int = 20, seed: int = 0
             centroids = new_centroids
             break
         centroids = new_centroids
-    return labels
+    return (labels, centroids) if return_centroids else labels
+
+
+def assign_kmeans(x: List[List[float]], centroids: List[List[float]]) -> List[int]:
+    """Assign points to pre-trained centroids."""
+    k = len(centroids)
+    return [min(range(k), key=lambda j: _dist_sq(pt, centroids[j])) for pt in x]
+
+
+def save_kmeans(centroids: List[List[float]], path: str) -> None:
+    with open(path, "wb") as f:
+        pickle.dump({"centroids": centroids}, f)
+
+
+def load_kmeans(path: str) -> List[List[float]]:
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    if isinstance(data, dict):
+        centroids = data.get("centroids", data.get("centers"))
+        if centroids is None:
+            centroids = next(iter(data.values()))
+    else:
+        centroids = data
+    return [[float(v) for v in c] for c in centroids]
 
 
 def _entropy(labels: List) -> float:
@@ -121,6 +152,7 @@ def get_args() -> argparse.Namespace:
     p.add_argument("json_file", type=str, help="JSON lines file with embeddings")
     p.add_argument("--output", type=str, default="umap.png", help="Output image path")
     p.add_argument("--cluster-domains", type=int, metavar="k", default=None, help="Cluster embeddings into k groups")
+    p.add_argument("--kmeans-model", type=str, default=None, help="Path to trained k-means .pth file")
     return p.parse_args()
 
 
@@ -128,8 +160,17 @@ def main() -> None:
     args = get_args()
     embeddings, domains = collect_embeddings(args.json_file)
     colour_labels = None
-    if args.cluster_domains is not None:
-        colour_labels = kmeans_cluster(embeddings, args.cluster_domains)
+    if args.kmeans_model is not None and os.path.exists(args.kmeans_model):
+        centroids = load_kmeans(args.kmeans_model)
+        colour_labels = assign_kmeans(embeddings, centroids)
+        if domains is not None:
+            score = v_measure(domains, colour_labels)
+            print(f"V-measure: {score:.3f}")
+    elif args.cluster_domains is not None:
+        result = kmeans_cluster(embeddings, args.cluster_domains, return_centroids=True)
+        colour_labels, centroids = result
+        if args.kmeans_model:
+            save_kmeans(centroids, args.kmeans_model)
         if domains is not None:
             score = v_measure(domains, colour_labels)
             print(f"V-measure: {score:.3f}")

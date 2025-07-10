@@ -16,6 +16,15 @@ import torch.nn.functional as F
 from einops import rearrange
 
 
+def load_checkpoint(path: str):
+    """Load a checkpoint from ``path`` supporting safetensors and torch formats."""
+    try:
+        return load_file(path)
+    except Exception as e:
+        print(f"Falling back to torch.load for {path}: {e}")
+        return torch.load(path, map_location="cpu")
+
+
 def xlm_tokenizer(tokens, tokenizer, max_len=100):
     tokens = tokenizer.encode(tokens)
 
@@ -171,7 +180,7 @@ def load_model_and_may_interpolate(
     else:
         local_path = ckpt_path
     
-    checkpoint = load_file(local_path)
+    checkpoint = load_checkpoint(local_path)
 
     print("Load ckpt from %s" % ckpt_path)
     checkpoint_model = None

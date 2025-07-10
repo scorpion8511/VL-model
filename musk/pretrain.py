@@ -141,15 +141,11 @@ def main():
         run = wandb.init(project=args.wandb_project)
 
     domain_manager = None
+    domain_list = []
     if args.domains:
         if not args.json_data:
             raise ValueError("--domains requires --json-data dataset with domain field")
         domain_list = parse_domain_list(args.domains)
-        if domain_list:
-            domain_manager = load_domain_encoders(domain_list)
-            domain_manager = domain_manager.to(accelerator.device)
-            domain_manager.eval()
-            accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
 
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")
@@ -168,7 +164,7 @@ def main():
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             tokenizer=None,
-            return_domain=domain_manager is not None,
+            return_domain=bool(domain_list),
         )
         (
             text_loader,
@@ -213,6 +209,11 @@ def main():
     unwrapped = accelerator.unwrap_model(model)
     embed_dim = unwrapped.beit3.args.encoder_embed_dim
     patch_size = unwrapped.beit3.args.patch_size
+    if domain_list:
+        domain_manager = load_domain_encoders(domain_list, out_dim=embed_dim)
+        domain_manager = domain_manager.to(accelerator.device)
+        domain_manager.eval()
+        accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
     img_decoder = torch.nn.Linear(embed_dim, 3 * patch_size * patch_size)
     txt_decoder = torch.nn.Linear(embed_dim, len(tokenizer))
 

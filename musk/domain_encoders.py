@@ -104,17 +104,21 @@ def get_domain_encoder(name: str) -> Tuple[AutoImageProcessor | None, nn.Module]
 class DomainEncoderManager(nn.Module):
     """Wrapper holding multiple domain-specific encoders with gating."""
 
-    def __init__(self, specs: Iterable[str]):
+    def __init__(self, specs: Iterable[str], out_dim: int | None = None):
         """Create domain encoders from specification strings.
 
         Each entry in ``specs`` may be either ``"name"`` to load a built-in
         encoder or ``"name=path"`` to load a checkpoint from ``path`` while using
-        ``name`` for routing.
+        ``name`` for routing. ``out_dim`` specifies the feature size that all
+        encoders will project to; if ``None`` the raw encoder outputs are used
+        directly and must have matching dimensions.
         """
         super().__init__()
         self.names: list[str] = []
         self.encoders = nn.ModuleDict()
         self.processors: Dict[str, AutoImageProcessor | None] = {}
+        self.proj = nn.ModuleDict()
+        self.out_dim = out_dim
 
         for spec in specs:
             if "=" in spec:
@@ -176,11 +180,19 @@ class DomainEncoderManager(nn.Module):
 
             if isinstance(feats, torch.Tensor) and feats.dim() > 2:
                 feats = feats.mean(dim=(2, 3))
+            if isinstance(feats, torch.Tensor) and feats.dim() == 1:
+                feats = feats.unsqueeze(1)
+            if self.out_dim is not None and isinstance(feats, torch.Tensor):
+                dim = feats.size(-1)
+                if dim != self.out_dim:
+                    if name not in self.proj:
+                        self.proj[name] = nn.Linear(dim, self.out_dim, bias=False).to(device)
+                    feats = self.proj[name](feats)
             for i, f in zip(mask.nonzero(as_tuple=True)[0].tolist(), feats):
                 outs[i] = f
         return torch.stack([o for o in outs])
 
 
-def load_domain_encoders(specs: Iterable[str]) -> DomainEncoderManager:
+def load_domain_encoders(specs: Iterable[str], out_dim: int | None = None) -> DomainEncoderManager:
     """Create :class:`DomainEncoderManager` from specification strings."""
-    return DomainEncoderManager(list(specs))
+    return DomainEncoderManager(list(specs), out_dim=out_dim)

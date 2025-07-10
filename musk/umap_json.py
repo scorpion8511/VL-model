@@ -164,6 +164,17 @@ def apply_domain_map(labels: List, mapping: dict[str, str]) -> List[str]:
     return [mapping_str.get(str(l), str(l)) for l in labels]
 
 
+def map_clusters_by_majority(labels_true: List, labels_pred: List[int]) -> List:
+    """Assign each cluster the majority domain label."""
+    majority: dict[int, str] = {}
+    for p, t in zip(labels_pred, labels_true):
+        if p not in majority:
+            majority[p] = {}
+        majority[p][t] = majority[p].get(t, 0) + 1
+    mapping = {c: max(v.items(), key=lambda kv: kv[1])[0] for c, v in majority.items()}
+    return [mapping[p] for p in labels_pred]
+
+
 def _entropy(labels: List) -> float:
     counts = {}
     for l in labels:
@@ -251,7 +262,9 @@ def main() -> None:
             score = v_measure(domains, colour_labels)
             print(f"V-measure: {score:.3f}")
     elif args.cluster_domains is not None:
-        result = kmeans_cluster(embeddings, args.cluster_domains, return_centroids=True)
+        result = kmeans_cluster(
+            embeddings, args.cluster_domains, return_centroids=True
+        )
         colour_labels, centroids = result
         if args.kmeans_model:
             save_kmeans(centroids, args.kmeans_model)
@@ -261,8 +274,14 @@ def main() -> None:
     elif domains is not None:
         colour_labels = domains
     plot_labels = colour_labels
+    if colour_labels is not None and domains is not None and args.cluster_domains is not None and not domain_map:
+        plot_labels = map_clusters_by_majority(domains, colour_labels)
     if domain_map and colour_labels is not None:
-        plot_labels = [domain_map.get(str(l), str(l)) for l in colour_labels]
+        if args.cluster_domains is not None and domains is not None:
+            mapped = map_clusters_by_majority(domains, colour_labels)
+        else:
+            mapped = colour_labels
+        plot_labels = [domain_map.get(str(l), str(l)) for l in mapped]
     try:
         plot_umap(embeddings, plot_labels, args.output)
     except ImportError as e:

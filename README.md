@@ -60,6 +60,8 @@ With `--cluster-domains <k>` the script clusters the embeddings using KMeans
 before plotting and reports the V-measure when true domain labels are present.
 Use `--kmeans-model model.pth` to load or save trained centroids.
 Pass `--domain-map mapping.json` to replace numeric labels with human-readable names in the legend.
+If clustering is performed and true domain labels exist but no mapping is
+provided, cluster indices are labelled by the majority domain name.
 
 Example:
 

@@ -13,6 +13,7 @@ from musk.umap_json import (
     save_kmeans,
     load_kmeans,
     apply_domain_map,
+    map_clusters_by_majority,
 )
 
 
@@ -45,3 +46,12 @@ def test_apply_domain_map():
     mapping = {"0": "foo", "1": "bar", "2": "baz"}
     mapped = apply_domain_map(labels, mapping)
     assert mapped == ["foo", "bar", "baz", "x"]
+
+
+def test_majority_mapping(tmp_path: Path):
+    json_path = make_dummy_json(tmp_path, n=4)
+    emb, domains = collect_embeddings(json_path)
+    labels, _ = kmeans_cluster(emb, 2, seed=0, return_centroids=True)
+    mapped = map_clusters_by_majority(domains, labels)
+    assert len(mapped) == 4
+    assert set(mapped).issubset({"a", "b"})

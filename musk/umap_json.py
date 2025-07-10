@@ -122,9 +122,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                 proj[mask, 1],
                 s=6,
                 label=str(lab),
-                color=cmap(idx),
+                c=[cmap(idx)],
             )
-        plt.legend()
+        plt.legend(title="domain")
     else:
         plt.scatter(proj[:, 0], proj[:, 1], s=6)
     plt.axis("off")

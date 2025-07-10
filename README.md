@@ -64,5 +64,6 @@ python -m musk.umap_json \
 ```
 
 With `--return-domain`, points from different domains are displayed in
-distinct colors. The script also prints the domain distribution so you can
-verify that labels were loaded correctly.
+distinct colors. The plot includes a legend showing the domain names, and
+the script prints the domain distribution so you can verify that labels
+were loaded correctly.

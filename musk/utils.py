@@ -170,8 +170,11 @@ def load_model_and_may_interpolate(
         
     else:
         local_path = ckpt_path
-    
-    checkpoint = load_file(local_path)
+
+    try:
+        checkpoint = load_file(local_path)
+    except Exception:
+        checkpoint = torch.load(local_path, map_location="cpu")
 
     print("Load ckpt from %s" % ckpt_path)
     checkpoint_model = None

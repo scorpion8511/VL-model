@@ -136,7 +136,7 @@ class DomainEncoderManager(nn.Module):
         """Encode a batch of images using domain-specific encoders."""
         device = images.device
         idxs = self.gate(domains)
-        outs: list[torch.Tensor] = [torch.empty(0, device=device) for _ in domains]
+        outs: list[torch.Tensor | None] = [None for _ in domains]
         for expert_idx in torch.unique(idxs, sorted=True):
             mask = idxs == expert_idx
             if not mask.any():
@@ -157,10 +157,18 @@ class DomainEncoderManager(nn.Module):
             else:
                 inp = imgs.to(device)
             out = enc(inp)
-            feats = out.last_hidden_state[:, 0] if hasattr(out, "last_hidden_state") else out[0]
+            if hasattr(out, "last_hidden_state"):
+                feats = out.last_hidden_state[:, 0]
+            elif isinstance(out, (tuple, list)):
+                out = out[0]
+                feats = out
+            else:
+                feats = out
+            if feats.dim() > 2:
+                feats = feats.mean(dim=(2, 3))
             for i, f in zip(mask.nonzero(as_tuple=True)[0].tolist(), feats):
                 outs[i] = f
-        return torch.stack(outs)
+        return torch.stack([o for o in outs])
 
 
 def load_domain_encoders(specs: Iterable[str]) -> DomainEncoderManager:

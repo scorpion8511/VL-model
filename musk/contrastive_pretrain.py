@@ -215,11 +215,13 @@ def main():
         moe_freq=args.moe_freq,
         moe_expert_count=args.num_experts,
     )
+    embed_dim = model.beit3.args.encoder_embed_dim
+
     domain_manager = None
     if args.domains:
         domain_list = parse_domain_list(args.domains)
         if domain_list:
-            domain_manager = load_domain_encoders(domain_list)
+            domain_manager = load_domain_encoders(domain_list, out_dim=embed_dim)
             domain_manager = domain_manager.to(accelerator.device)
             domain_manager.eval()
             accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
@@ -256,7 +258,6 @@ def main():
         accelerator.print(f"Loaded encoder weights from {args.encoder}")
         if missing.missing_keys:
             accelerator.print(f"Missing keys in encoder load: {missing.missing_keys}")
-    embed_dim = model.beit3.args.encoder_embed_dim
     decoder = CrossAttentionDecoder(embed_dim)
     mlm_head = nn.Linear(embed_dim, len(tokenizer))
     caption_dec = CaptionDecoder(embed_dim, len(tokenizer)) if args.caption_loss else None

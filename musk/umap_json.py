@@ -67,10 +67,24 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to trained checkpoint")
     parser.add_argument("--arch", type=str, default="musk_large_patch16_384", help="Model architecture name")
     parser.add_argument("--output", type=str, default="umap.png", help="Output image path")
-    parser.add_argument("--return-domain", action="store_true", help="Use domain labels from the JSON file")
+    parser.add_argument(
+        "--return-domain",
+        action="store_true",
+        help="Use domain labels from the JSON file",
+    )
     args = parser.parse_args(argv)
 
-    dataset = ImageTextJsonDataset(args.json_data, mode="image", return_domain=args.return_domain)
+    dataset = ImageTextJsonDataset(
+        args.json_data, mode="image", return_domain=args.return_domain
+    )
+
+    # Auto-detect domain labels when not explicitly requested
+    use_domain = args.return_domain
+    if not use_domain and dataset.items and "domain" in dataset.items[0]:
+        use_domain = True
+        dataset.return_domain = True
+        print("Found 'domain' key in JSON; using domain labels by default")
+
     loader = DataLoader(dataset, batch_size=32, num_workers=4)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -78,7 +92,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     load_model_and_may_interpolate(args.checkpoint, model, "model|module", "")
     model.to(device)
 
-    feats, labels = collect_embeddings(model, loader, device, args.return_domain)
+    feats, labels = collect_embeddings(model, loader, device, use_domain)
 
     if labels:
         uniq = sorted(set(labels))

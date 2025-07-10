@@ -60,10 +60,11 @@ python -m musk.umap_json \
     --checkpoint musk_stage2.pt \
     --arch musk_large_patch16_384 \
     --output umap.png
-    # add --return-domain when the JSON includes a "domain" key
+    # add --return-domain to override automatic detection of a "domain" key
 ```
 
-With `--return-domain`, points from different domains are displayed in
-distinct colors. The plot includes a legend showing the domain names, and
-the script prints the domain distribution so you can verify that labels
-were loaded correctly.
+If the JSON includes a `domain` field, the script automatically colors
+points from each domain using distinct colors and adds a legend. Use
+`--return-domain` to explicitly enable or disable this behavior. The
+script prints the domain distribution so you can verify that labels were
+loaded correctly.

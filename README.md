@@ -50,15 +50,24 @@ Specify `--wandb-project <name>` to log these metrics to Weights & Biases.
 
 ## UMAP visualization
 
-Use `musk.umap_json` to visualize embeddings stored in a JSON lines file. Each line
-should contain an `embedding` array and may include a `domain` label.
-With `--cluster-domains <k>` the script clusters the embeddings using
-KMeans before plotting and reports the V-measure when true domain labels are
-present. Use `--kmeans-model model.pth` to load or save trained centroids.
+Use `musk.umap_json` to visualize embeddings stored in a JSON lines file. When
+an `embedding` array is present it will be used directly. Otherwise specify
+`--embedding-model <ckpt>` and embeddings will be computed on the fly from the
+provided MUSK checkpoint. The JSON may include an optional `domain` label for
+V-measure evaluation.
+
+With `--cluster-domains <k>` the script clusters the embeddings using KMeans
+before plotting and reports the V-measure when true domain labels are present.
+Use `--kmeans-model model.pth` to load or save trained centroids.
 
 Example:
 
 ```shell
+# compute embeddings with a checkpoint and cluster
+python -m musk.umap_json --json-data data.jsonl --embedding-model musk_pretrained.pt \
+       --cluster-domains 3 --output umap.png
+
 # train clusters and save centroids
-python -m musk.umap_json data.jsonl --cluster-domains 3 --kmeans-model model.pth --output umap.png
+python -m musk.umap_json data.jsonl --cluster-domains 3 --kmeans-model kmeans.pth \
+       --output umap.png
 ```

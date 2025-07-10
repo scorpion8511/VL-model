@@ -13,6 +13,7 @@ import math
 import random
 import os
 from typing import List, Optional, Tuple
+from pathlib import Path
 
 import pickle
 
@@ -28,17 +29,76 @@ def _load_json_lines(path: str) -> List[dict]:
     return items
 
 
-def collect_embeddings(json_file: str) -> Tuple[List[List[float]], Optional[List[str]]]:
-    """Return embeddings and optional domain labels from a JSON lines file."""
+def collect_embeddings(json_file: str, model_path: Optional[str] = None) -> Tuple[List[List[float]], Optional[List[str]]]:
+    """Return embeddings and optional domain labels from a JSON lines file.
+
+    If ``model_path`` is provided or the JSON items do not contain an ``embedding``
+    field, embeddings are computed using the specified MUSK model. Items may
+    contain either an ``image`` or ``text`` field.
+    """
+
     items = _load_json_lines(json_file)
     embeddings: List[List[float]] = []
     domains: List[str] = []
+
+    # Use embeddings from JSON when available and no model is specified
+    if model_path is None and all("embedding" in it for it in items):
+        for it in items:
+            embeddings.append([float(x) for x in it["embedding"]])
+            if "domain" in it:
+                domains.append(it["domain"])
+        labels = domains if domains else None
+        return embeddings, labels
+
+    if model_path is None:
+        raise ValueError("Embeddings missing and no model checkpoint provided")
+
+    import torch
+    from PIL import Image
+    import torchvision.transforms as T
+    from transformers import XLMRobertaTokenizer
+    from timm.models import create_model
+    from .utils import xlm_tokenizer, load_model_and_may_interpolate
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = create_model("musk_large_patch16_384")
+    load_model_and_may_interpolate(model_path, model, "model|module", "")
+    model.to(device)
+    model.eval()
+
+    tokenizer_path = Path(__file__).resolve().parent / "models" / "tokenizer.spm"
+    tokenizer = None
+    transform = T.Compose([
+        T.Resize(384, interpolation=3, antialias=True),
+        T.CenterCrop((384, 384)),
+        T.ToTensor(),
+    ])
+
     for it in items:
-        if "embedding" not in it:
-            raise ValueError("Each JSON item must include an 'embedding' field")
-        embeddings.append([float(x) for x in it["embedding"]])
+        if "image" in it:
+            img = Image.open(it["image"]).convert("RGB")
+            inp = transform(img).unsqueeze(0).to(device)
+            with torch.no_grad():
+                feat, _ = model(image=inp)
+            vec = feat[0].cpu().tolist()
+        elif "text" in it:
+            if tokenizer is None:
+                tokenizer = XLMRobertaTokenizer(str(tokenizer_path))
+            tokens, pad = xlm_tokenizer(it["text"], tokenizer)
+            tokens = torch.tensor(tokens).unsqueeze(0).to(device)
+            pad = torch.tensor(pad, dtype=torch.bool).unsqueeze(0).to(device)
+            with torch.no_grad():
+                _, feat = model(text_description=tokens, padding_mask=pad)
+            vec = feat[0].cpu().tolist()
+        elif "embedding" in it:
+            vec = [float(x) for x in it["embedding"]]
+        else:
+            raise ValueError("Each JSON item must include 'image', 'text', or 'embedding'")
+
+        embeddings.append([float(x) for x in vec])
         if "domain" in it:
             domains.append(it["domain"])
+
     labels = domains if domains else None
     return embeddings, labels
 
@@ -149,16 +209,22 @@ def plot_umap(embeddings: List[List[float]], labels: Optional[list] = None, out_
 
 def get_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="UMAP visualization for JSON embeddings")
-    p.add_argument("json_file", type=str, help="JSON lines file with embeddings")
+    p.add_argument("json_file", type=str, nargs="?", help="JSON lines file with embeddings")
+    p.add_argument("--json-data", type=str, help="JSON lines file (alias of positional arg)")
     p.add_argument("--output", type=str, default="umap.png", help="Output image path")
     p.add_argument("--cluster-domains", type=int, metavar="k", default=None, help="Cluster embeddings into k groups")
     p.add_argument("--kmeans-model", type=str, default=None, help="Path to trained k-means .pth file")
+    p.add_argument("--embedding-model", type=str, default=None, help="Trained MUSK .pth to compute embeddings")
     return p.parse_args()
 
 
 def main() -> None:
     args = get_args()
-    embeddings, domains = collect_embeddings(args.json_file)
+    json_path = args.json_data or args.json_file
+    if json_path is None:
+        raise SystemExit("JSON file must be specified")
+
+    embeddings, domains = collect_embeddings(json_path, args.embedding_model)
     colour_labels = None
     if args.kmeans_model is not None and os.path.exists(args.kmeans_model):
         centroids = load_kmeans(args.kmeans_model)

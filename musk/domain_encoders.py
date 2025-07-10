@@ -145,6 +145,12 @@ class DomainEncoderManager(nn.Module):
             imgs = images[mask]
             proc = self.processors[name]
             enc = self.encoders[name]
+            if name == "mri" and imgs.size(1) != 2:
+                # the pretrained MRI autoencoder expects 2-channel inputs
+                # convert RGB or single-channel images to two channels by
+                # averaging then repeating
+                gray = imgs.mean(dim=1, keepdim=True)
+                imgs = gray.repeat(1, 2, 1, 1)
             if proc is not None:
                 proc_out = proc(images=list(imgs), return_tensors="pt")
                 inp = proc_out[proc.model_input_names[0]].to(device)

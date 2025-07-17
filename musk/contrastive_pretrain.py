@@ -157,6 +157,7 @@ def get_args():
     p.add_argument("--mask-ratio", type=float, default=0.3)
     p.add_argument("--caption-loss", action="store_true", help="Enable caption generation loss")
     p.add_argument("--recon-loss", action="store_true", help="Enable image reconstruction loss")
+    p.add_argument("--domain-loss", action="store_true", help="Enable domain classification loss")
     p.add_argument("--output", type=str, default="musk_stage2.pt")
     p.add_argument(
         "--wandb-project",
@@ -270,12 +271,17 @@ def main():
         if args.recon_loss
         else None
     )
+    domain_head = (
+        nn.Linear(embed_dim, len(domain_manager.names)) if args.domain_loss and domain_manager is not None else None
+    )
 
     params = [model.parameters(), decoder.parameters(), mlm_head.parameters()]
     if caption_dec is not None:
         params.append(caption_dec.parameters())
     if patch_dec is not None:
         params.append(patch_dec.parameters())
+    if domain_head is not None:
+        params.append(domain_head.parameters())
     optimizer = torch.optim.AdamW(
         itertools.chain(*params),
         lr=args.lr,
@@ -289,6 +295,8 @@ def main():
         modules.append(caption_dec)
     if patch_dec is not None:
         modules.append(patch_dec)
+    if domain_head is not None:
+        modules.append(domain_head)
     modules.extend([optimizer, scheduler, pair_loader])
     prepared = accelerator.prepare(*modules)
     ptr = 0
@@ -299,6 +307,8 @@ def main():
         caption_dec = prepared[ptr]; ptr += 1
     if args.recon_loss:
         patch_dec = prepared[ptr]; ptr += 1
+    if args.domain_loss and domain_head is not None:
+        domain_head = prepared[ptr]; ptr += 1
     optimizer = prepared[ptr]; ptr += 1
     scheduler = prepared[ptr]; ptr += 1
     pair_loader = prepared[ptr]
@@ -314,6 +324,7 @@ def main():
         mlm_epoch = 0.0
         cap_epoch = 0.0
         rec_epoch = 0.0
+        dom_epoch = 0.0
         num_batches = 0
         for batch in pair_loader:
             if domain_manager is not None:
@@ -339,14 +350,13 @@ def main():
 
             # ----- Contrastive path -----
             with accelerator.no_sync(model):
-                img_emb, txt_emb = model(
+                img_emb_base, txt_emb = model(
                     image=images,
                     text_description=tokens,
                     padding_mask=padding,
                     return_global=True,
                 )
-                if domain_manager is not None:
-                    img_emb = img_emb_dom
+                img_emb = img_emb_dom if domain_manager is not None else img_emb_base
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
                 accelerator.backward(loss_c)
@@ -368,6 +378,13 @@ def main():
             dec_out = decoder(txt_seq, img_seq, padding.bool())
             pred = mlm_head(dec_out[mask_txt])
             loss_mlm = ce_loss(pred, tokens[mask_txt])
+
+            loss_domain = torch.tensor(0.0, device=accelerator.device)
+            if args.domain_loss and domain_head is not None and domain_manager is not None:
+                domain_idx = domain_manager.indices(domains).to(accelerator.device)
+                dom_logits = domain_head(img_emb_base.detach())
+                loss_domain = ce_loss(dom_logits, domain_idx)
+                accelerator.backward(loss_domain)
 
             loss_cap = torch.tensor(0.0, device=accelerator.device)
             if args.caption_loss:
@@ -409,6 +426,7 @@ def main():
             mlm_epoch += loss_mlm.item()
             cap_epoch += loss_cap.item()
             rec_epoch += loss_rec.item()
+            dom_epoch += loss_domain.item()
             num_batches += 1
 
         denom = accelerator.reduce(torch.tensor(num_batches, device=accelerator.device), reduction="sum")
@@ -416,17 +434,20 @@ def main():
         mlm_total = accelerator.reduce(torch.tensor(mlm_epoch, device=accelerator.device), reduction="sum")
         cap_total = accelerator.reduce(torch.tensor(cap_epoch, device=accelerator.device), reduction="sum") if args.caption_loss else torch.tensor(0.0, device=accelerator.device)
         rec_total = accelerator.reduce(torch.tensor(rec_epoch, device=accelerator.device), reduction="sum") if args.recon_loss else torch.tensor(0.0, device=accelerator.device)
+        dom_total = accelerator.reduce(torch.tensor(dom_epoch, device=accelerator.device), reduction="sum") if args.domain_loss else torch.tensor(0.0, device=accelerator.device)
 
         c_avg = (contrast_total / denom).item()
         mlm_avg = (mlm_total / denom).item()
         cap_avg = (cap_total / denom).item() if args.caption_loss else 0.0
         rec_avg = (rec_total / denom).item() if args.recon_loss else 0.0
+        dom_avg = (dom_total / denom).item() if args.domain_loss else 0.0
 
         if val_loader is not None:
             val_c = 0.0
             val_mlm = 0.0
             val_cap = 0.0
             val_rec = 0.0
+            val_dom = 0.0
             val_batches = 0
             for batch in val_loader:
                 if domain_manager is not None:
@@ -447,16 +468,15 @@ def main():
                 if domain_manager is not None:
                     domains = list(domains)
                     img_emb_dom = domain_manager(images, domains).to(accelerator.device)
-
+                    
                 with torch.no_grad():
-                    img_emb, txt_emb = model(
+                    img_emb_base, txt_emb = model(
                         image=images,
                         text_description=tokens,
                         padding_mask=padding,
                         return_global=True,
                     )
-                if domain_manager is not None:
-                    img_emb = img_emb_dom
+                img_emb = img_emb_dom if domain_manager is not None else img_emb_base
                 logit_scale = base_model.logit_scale.exp()
                 loss_c = clip_loss(img_emb, txt_emb, logit_scale)
 
@@ -505,14 +525,21 @@ def main():
                             return_seq=True,
                         )
                         rec_pred = patch_dec(full_txt)
-                        loss_rec_val = F.mse_loss(rec_pred, patches)
-                    else:
-                        loss_rec_val = torch.tensor(0.0, device=accelerator.device)
+                    loss_rec_val = F.mse_loss(rec_pred, patches)
+                else:
+                    loss_rec_val = torch.tensor(0.0, device=accelerator.device)
+
+                loss_dom_val = torch.tensor(0.0, device=accelerator.device)
+                if args.domain_loss and domain_head is not None and domain_manager is not None:
+                    domain_idx = domain_manager.indices(domains).to(accelerator.device)
+                    dom_logits_val = domain_head(img_emb_base)
+                    loss_dom_val = ce_loss(dom_logits_val, domain_idx)
 
                 val_c += loss_c.item()
                 val_mlm += loss_mlm.item()
                 val_cap += loss_cap_val.item()
                 val_rec += loss_rec_val.item()
+                val_dom += loss_dom_val.item()
                 val_batches += 1
 
             val_denom = accelerator.reduce(torch.tensor(val_batches, device=accelerator.device), reduction="sum")
@@ -520,15 +547,19 @@ def main():
             val_mlm_total = accelerator.reduce(torch.tensor(val_mlm, device=accelerator.device), reduction="sum")
             val_cap_total = accelerator.reduce(torch.tensor(val_cap, device=accelerator.device), reduction="sum") if args.caption_loss else torch.tensor(0.0, device=accelerator.device)
             val_rec_total = accelerator.reduce(torch.tensor(val_rec, device=accelerator.device), reduction="sum") if args.recon_loss else torch.tensor(0.0, device=accelerator.device)
+            val_dom_total = accelerator.reduce(torch.tensor(val_dom, device=accelerator.device), reduction="sum") if args.domain_loss else torch.tensor(0.0, device=accelerator.device)
             c_val_avg = (val_c_total / val_denom).item()
             mlm_val_avg = (val_mlm_total / val_denom).item()
             cap_val_avg = (val_cap_total / val_denom).item() if args.caption_loss else 0.0
             rec_val_avg = (val_rec_total / val_denom).item() if args.recon_loss else 0.0
+            dom_val_avg = (val_dom_total / val_denom).item() if args.domain_loss else 0.0
             extras = ""
             if args.caption_loss:
                 extras += f" Cap={cap_avg:.4f}"
             if args.recon_loss:
                 extras += f" Rec={rec_avg:.4f}"
+            if args.domain_loss:
+                extras += f" Dom={dom_avg:.4f}"
             accelerator.print(
                 f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}{extras} Val_Contrastive={c_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
             )
@@ -540,10 +571,12 @@ def main():
                         "train_mlm": mlm_avg,
                         **({"train_caption": cap_avg} if args.caption_loss else {}),
                         **({"train_recon": rec_avg} if args.recon_loss else {}),
+                        **({"train_domain": dom_avg} if args.domain_loss else {}),
                         "val_contrastive": c_val_avg,
                         "val_mlm": mlm_val_avg,
                         **({"val_caption": cap_val_avg} if args.caption_loss else {}),
                         **({"val_recon": rec_val_avg} if args.recon_loss else {}),
+                        **({"val_domain": dom_val_avg} if args.domain_loss else {}),
                     }
                 )
         else:
@@ -552,6 +585,8 @@ def main():
                 extras += f" Cap={cap_avg:.4f}"
             if args.recon_loss:
                 extras += f" Rec={rec_avg:.4f}"
+            if args.domain_loss:
+                extras += f" Dom={dom_avg:.4f}"
             accelerator.print(
                 f"Epoch {epoch + 1}: Contrastive={c_avg:.4f} MLM={mlm_avg:.4f}{extras}"
             )
@@ -563,12 +598,16 @@ def main():
                         "train_mlm": mlm_avg,
                         **({"train_caption": cap_avg} if args.caption_loss else {}),
                         **({"train_recon": rec_avg} if args.recon_loss else {}),
+                        **({"train_domain": dom_avg} if args.domain_loss else {}),
                     }
                 )
 
     if accelerator.is_main_process:
         accelerator.print(f"Saving model to {args.output}")
-        torch.save(base_model.state_dict(), args.output)
+        save_dict = {"model": base_model.state_dict()}
+        if args.domain_loss and domain_head is not None:
+            save_dict["domain_head"] = domain_head.state_dict()
+        torch.save(save_dict, args.output)
         if run:
             run.finish()
 

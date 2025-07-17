@@ -109,6 +109,12 @@ def get_args():
         help="Comma-separated list of additional domain encoders for distillation",
     )
     parser.add_argument(
+        "--domain-head",
+        type=str,
+        default=None,
+        help="Path to a pretrained domain classification head to continue training",
+    )
+    parser.add_argument(
         "--domain-loss",
         action="store_true",
         help="Enable domain classification loss using dataset domain labels",
@@ -221,17 +227,23 @@ def main():
         accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
     domain_head = None
     domain_names: list[str] = []
-    if args.domain_loss:
+    if args.domain_loss or args.domain_head:
         ds = image_loader.dataset
         if isinstance(ds, torch.utils.data.Subset):
             ds = ds.dataset
+        dataset_domains = getattr(ds, "domains", [])
         if domain_manager is not None:
-            domain_names = domain_manager.names
-        else:
-            domain_names = getattr(ds, "domains", [])
-        if not domain_names:
-            raise ValueError("--domain-loss requires domain labels in dataset")
-        domain_head = torch.nn.Linear(embed_dim, len(domain_names))
+            dataset_domains = domain_manager.names
+        if args.domain_head:
+            state = torch.load(args.domain_head, map_location="cpu")
+            domain_names = state.get("domains", dataset_domains)
+            domain_head = torch.nn.Linear(embed_dim, len(domain_names))
+            domain_head.load_state_dict(state["state_dict"], strict=False)
+        elif args.domain_loss:
+            domain_names = dataset_domains
+            if not domain_names:
+                raise ValueError("--domain-loss requires domain labels in dataset")
+            domain_head = torch.nn.Linear(embed_dim, len(domain_names))
     img_decoder = torch.nn.Linear(embed_dim, 3 * patch_size * patch_size)
     txt_decoder = torch.nn.Linear(embed_dim, len(tokenizer))
 

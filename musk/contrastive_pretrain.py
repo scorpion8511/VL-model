@@ -179,6 +179,12 @@ def get_args():
         help="Comma-separated list of domain encoders to use",
     )
     p.add_argument(
+        "--domain-head",
+        type=str,
+        default=None,
+        help="Path to a pretrained domain classification head",
+    )
+    p.add_argument(
         "--moe-freq",
         type=int,
         default=0,
@@ -279,11 +285,16 @@ def main():
         if args.recon_loss
         else None
     )
-    if args.domain_loss:
+    domain_head = None
+    if args.domain_head:
+        state = torch.load(args.domain_head, map_location="cpu")
+        saved_domains = state.get("domains", domain_names)
+        domain_head = nn.Linear(embed_dim, len(saved_domains))
+        domain_head.load_state_dict(state["state_dict"], strict=False)
+        domain_names = list(saved_domains)
+    elif args.domain_loss:
         n_dom = len(domain_manager.names) if domain_manager is not None else len(domain_names)
         domain_head = nn.Linear(embed_dim, n_dom)
-    else:
-        domain_head = None
 
     params = [model.parameters(), decoder.parameters(), mlm_head.parameters()]
     if caption_dec is not None:

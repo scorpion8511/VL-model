@@ -64,6 +64,7 @@ accelerate launch -m musk.pretrain \
 ```
 
 Add `--domain-loss` to train a classifier predicting the domain label.
+Pass `--domain-head path/to/head.pth` to resume training with a saved classifier.
 
 After stage one run contrastive pretraining:
 
@@ -72,7 +73,7 @@ accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
        --batch-size 16 --epochs 20 --output musk_stage2.pt \
        --encoder musk_pretrained_encoder.pt \
        --domains mri,xray=/path/xray.pth,patho=/path/patho.pth,endo=/path/endo.pth \
-       --domain-loss
+       --domain-loss --domain-head musk_pretrained.pt.domain_head.pth
 ```
 
 When a JSON file is used, 10% of the samples are held out for validation and the

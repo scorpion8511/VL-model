@@ -292,7 +292,8 @@ def main():
                     with torch.no_grad():
                         teach = domain_manager(images, list(domains)).to(images.device)
                     loss_img = loss_img + args.distill_weight * mse_loss(img_cls, teach)
-                accelerator.backward(loss_img)
+
+                loss = loss_img
 
                 if args.domain_loss and domain_head is not None:
                     dom_idx = torch.tensor([domain_names.index(d) if d in domain_names else -1 for d in domains], device=images.device)
@@ -300,8 +301,10 @@ def main():
                     if valid.any():
                         dom_pred = domain_head(img_cls[valid])
                         loss_dom = ce_loss(dom_pred, dom_idx[valid])
-                        accelerator.backward(loss_dom)
+                        loss = loss + loss_dom
                         dom_loss_epoch += loss_dom.item()
+
+                accelerator.backward(loss)
 
             # ----- Masked Language Modeling -----
             tokens = tokens.to(images.device)

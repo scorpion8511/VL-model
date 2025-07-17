@@ -20,7 +20,7 @@ accelerate launch -m musk.contrastive_pretrain \
 
 The script minimizes a CLIP-style contrastive loss plus an auxiliary MLM loss.
 Enable caption generation or image reconstruction objectives with `--caption-loss`
-and `--recon-loss`.
+and `--recon-loss`. Add `--domain-loss` to classify the domain name during training.
 
 Stage-one pretraining example:
 
@@ -60,8 +60,10 @@ accelerate launch -m musk.pretrain \
        --json-data data.jsonl \
        --moe-freq 4 --num-experts 4 \
        --domains mri,xray=/path/xray.pth,patho=/path/patho.pth,endo=/path/endo.pth \
-       --epochs 5 --output musk_pretrained.pt
+       --epochs 5 --output musk_pretrained.pt --domain-loss
 ```
+
+Add `--domain-loss` to train a classifier predicting the domain label.
 
 After stage one run contrastive pretraining:
 

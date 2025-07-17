@@ -109,6 +109,11 @@ def get_args():
         help="Comma-separated list of additional domain encoders for distillation",
     )
     parser.add_argument(
+        "--domain-loss",
+        action="store_true",
+        help="Enable domain classification loss using dataset domain labels",
+    )
+    parser.add_argument(
         "--distill-weight",
         type=float,
         default=1.0,
@@ -164,7 +169,7 @@ def main():
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             tokenizer=None,
-            return_domain=bool(domain_list),
+            return_domain=bool(domain_list) or args.domain_loss,
         )
         (
             text_loader,
@@ -214,18 +219,38 @@ def main():
         domain_manager = domain_manager.to(accelerator.device)
         domain_manager.eval()
         accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
+    domain_head = None
+    domain_names = []
+    if args.domain_loss:
+        ds = image_loader.dataset
+        if isinstance(ds, torch.utils.data.Subset):
+            ds = ds.dataset
+        domain_names = getattr(ds, "domains", [])
+        if not domain_names:
+            raise ValueError("--domain-loss requires domain labels in dataset")
+        domain_head = torch.nn.Linear(embed_dim, len(domain_names))
     img_decoder = torch.nn.Linear(embed_dim, 3 * patch_size * patch_size)
     txt_decoder = torch.nn.Linear(embed_dim, len(tokenizer))
 
-    optimizer = torch.optim.AdamW(
-        itertools.chain(model.parameters(), img_decoder.parameters(), txt_decoder.parameters()),
-        lr=args.lr,
-    )
+    params = [model.parameters(), img_decoder.parameters(), txt_decoder.parameters()]
+    if domain_head is not None:
+        params.append(domain_head.parameters())
+    optimizer = torch.optim.AdamW(itertools.chain(*params), lr=args.lr)
 
-    components = accelerator.prepare(
-        model, img_decoder, txt_decoder, optimizer, image_loader, text_loader
-    )
-    model, img_decoder, txt_decoder, optimizer, image_loader, text_loader = components
+    modules = [model, img_decoder, txt_decoder]
+    if domain_head is not None:
+        modules.append(domain_head)
+    modules += [optimizer, image_loader, text_loader]
+    prepared = accelerator.prepare(*modules)
+    ptr = 0
+    model = prepared[ptr]; ptr += 1
+    img_decoder = prepared[ptr]; ptr += 1
+    txt_decoder = prepared[ptr]; ptr += 1
+    if domain_head is not None:
+        domain_head = prepared[ptr]; ptr += 1
+    optimizer = prepared[ptr]; ptr += 1
+    image_loader = prepared[ptr]; ptr += 1
+    text_loader = prepared[ptr]
     if val_image_loader is not None:
         val_image_loader = accelerator.prepare(val_image_loader)
         val_text_loader = accelerator.prepare(val_text_loader)
@@ -237,6 +262,7 @@ def main():
     for epoch in range(args.epochs):
         mim_loss_epoch = 0.0
         mlm_loss_epoch = 0.0
+        dom_loss_epoch = 0.0
         num_batches = 0
         for img_data, (tokens, padding) in zip(image_loader, text_loader):
             if domain_manager is not None:
@@ -268,6 +294,15 @@ def main():
                     loss_img = loss_img + args.distill_weight * mse_loss(img_cls, teach)
                 accelerator.backward(loss_img)
 
+                if args.domain_loss and domain_head is not None:
+                    dom_idx = torch.tensor([domain_names.index(d) if d in domain_names else -1 for d in domains], device=images.device)
+                    valid = dom_idx >= 0
+                    if valid.any():
+                        dom_pred = domain_head(img_cls[valid])
+                        loss_dom = ce_loss(dom_pred, dom_idx[valid])
+                        accelerator.backward(loss_dom)
+                        dom_loss_epoch += loss_dom.item()
+
             # ----- Masked Language Modeling -----
             tokens = tokens.to(images.device)
             padding = padding.to(images.device)
@@ -295,13 +330,18 @@ def main():
         denom = accelerator.reduce(torch.tensor(num_batches, device=accelerator.device), reduction="sum")
         mim_total = accelerator.reduce(torch.tensor(mim_loss_epoch, device=accelerator.device), reduction="sum")
         mlm_total = accelerator.reduce(torch.tensor(mlm_loss_epoch, device=accelerator.device), reduction="sum")
+        if args.domain_loss:
+            dom_total = accelerator.reduce(torch.tensor(dom_loss_epoch, device=accelerator.device), reduction="sum")
 
         mim_avg = (mim_total / denom).item()
         mlm_avg = (mlm_total / denom).item()
+        if args.domain_loss:
+            dom_avg = (dom_total / denom).item()
 
         if val_image_loader is not None:
             val_mim = 0.0
             val_mlm = 0.0
+            val_dom = 0.0
             val_batches = 0
             for img_data, (tokens, padding) in zip(val_image_loader, val_text_loader):
                 if domain_manager is not None:
@@ -346,6 +386,15 @@ def main():
                 pred_txt = txt_decoder(txt_seq[mask_txt])
                 loss_txt = ce_loss(pred_txt, tokens[mask_txt])
 
+                if args.domain_loss and domain_head is not None:
+                    dom_idx = torch.tensor([domain_names.index(d) if d in domain_names else -1 for d in domains], device=images.device)
+                    valid = dom_idx >= 0
+                    if valid.any():
+                        with torch.no_grad():
+                            pred_dom = domain_head(img_cls[valid])
+                            loss_dom = ce_loss(pred_dom, dom_idx[valid])
+                        val_dom += loss_dom.item()
+
                 val_mim += loss_img.item()
                 val_mlm += loss_txt.item()
                 val_batches += 1
@@ -355,27 +404,38 @@ def main():
             val_mlm_total = accelerator.reduce(torch.tensor(val_mlm, device=accelerator.device), reduction="sum")
             mim_val_avg = (val_mim_total / val_denom).item()
             mlm_val_avg = (val_mlm_total / val_denom).item()
-            accelerator.print(
-                f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f} Val_MIM={mim_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
-            )
+            if args.domain_loss:
+                val_dom_total = accelerator.reduce(torch.tensor(val_dom, device=accelerator.device), reduction="sum")
+                dom_val_avg = (val_dom_total / val_denom).item()
+            msg = f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f} Val_MIM={mim_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
+            if args.domain_loss:
+                msg += f" Val_DOM={dom_val_avg:.4f}"
+            accelerator.print(msg)
             if run:
                 run.log(
                     {
                         "epoch": epoch + 1,
                         "train_mim": mim_avg,
                         "train_mlm": mlm_avg,
+                        **({"train_dom": dom_avg} if args.domain_loss else {}),
                         "val_mim": mim_val_avg,
                         "val_mlm": mlm_val_avg,
+                        **({"val_dom": dom_val_avg} if args.domain_loss else {})
                     }
                 )
         else:
-            accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
+            msg = f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}"
+            if args.domain_loss:
+                avg_dom = dom_loss_epoch / denom.item()
+                msg += f" DOM={avg_dom:.4f}"
+            accelerator.print(msg)
             if run:
                 run.log(
                     {
                         "epoch": epoch + 1,
                         "train_mim": mim_avg,
                         "train_mlm": mlm_avg,
+                        **({"train_dom": dom_loss_epoch / denom.item()} if args.domain_loss else {}),
                     }
                 )
 
@@ -386,6 +446,8 @@ def main():
         if args.encoder_out:
             accelerator.print(f"Saving encoder weights to {args.encoder_out}")
             torch.save(base_model.beit3.state_dict(), args.encoder_out)
+        if args.domain_loss and domain_head is not None:
+            torch.save(domain_head.state_dict(), args.output + ".domain_head.pth")
         if run:
             run.finish()
 

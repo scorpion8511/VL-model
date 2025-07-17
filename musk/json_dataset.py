@@ -60,6 +60,8 @@ class ImageTextJsonDataset(Dataset):
         self.return_patches = return_patches
         self.patch_size = patch_size
         self.return_domain = return_domain
+        self.domains = sorted({item.get("domain") for item in self.items if item.get("domain") is not None})
+        self.domain_to_idx = {d: i for i, d in enumerate(self.domains)}
 
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.items)

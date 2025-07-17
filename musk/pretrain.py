@@ -220,12 +220,15 @@ def main():
         domain_manager.eval()
         accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
     domain_head = None
-    domain_names = []
+    domain_names: list[str] = []
     if args.domain_loss:
         ds = image_loader.dataset
         if isinstance(ds, torch.utils.data.Subset):
             ds = ds.dataset
-        domain_names = getattr(ds, "domains", [])
+        if domain_manager is not None:
+            domain_names = domain_manager.names
+        else:
+            domain_names = getattr(ds, "domains", [])
         if not domain_names:
             raise ValueError("--domain-loss requires domain labels in dataset")
         domain_head = torch.nn.Linear(embed_dim, len(domain_names))
@@ -450,7 +453,8 @@ def main():
             accelerator.print(f"Saving encoder weights to {args.encoder_out}")
             torch.save(base_model.beit3.state_dict(), args.encoder_out)
         if args.domain_loss and domain_head is not None:
-            torch.save(domain_head.state_dict(), args.output + ".domain_head.pth")
+            torch.save({"state_dict": domain_head.state_dict(), "domains": domain_names},
+                       args.output + ".domain_head.pth")
         if run:
             run.finish()
 

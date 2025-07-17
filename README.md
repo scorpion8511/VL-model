@@ -70,7 +70,9 @@ After stage one run contrastive pretraining:
 ```shell
 accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
        --batch-size 16 --epochs 20 --output musk_stage2.pt \
-       --encoder musk_pretrained_encoder.pt
+       --encoder musk_pretrained_encoder.pt \
+       --domains mri,xray=/path/xray.pth,patho=/path/patho.pth,endo=/path/endo.pth \
+       --domain-loss
 ```
 
 When a JSON file is used, 10% of the samples are held out for validation and the

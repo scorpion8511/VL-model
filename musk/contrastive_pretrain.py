@@ -240,7 +240,7 @@ def main():
             args.num_workers,
             return_patches=args.recon_loss,
             patch_size=patch_size,
-            return_domain=domain_manager is not None,
+            return_domain=domain_manager is not None or args.domain_loss,
         )
     else:
         pair_loader = get_pair_loader(
@@ -250,9 +250,17 @@ def main():
             args.num_workers,
             return_patches=args.recon_loss,
             patch_size=patch_size,
-            return_domain=domain_manager is not None,
+            return_domain=domain_manager is not None or args.domain_loss,
         )
         val_loader = None
+
+    base_ds = pair_loader.dataset
+    if isinstance(base_ds, torch.utils.data.Subset):
+        base_ds = base_ds.dataset
+    domain_names = getattr(base_ds, "domains", [])
+    domain_to_idx = getattr(base_ds, "domain_to_idx", {})
+    if args.domain_loss and not domain_names:
+        raise ValueError("--domain-loss requires domain labels in the dataset")
     if args.encoder:
         state = torch.load(args.encoder, map_location="cpu")
         missing = model.beit3.load_state_dict(state, strict=False)
@@ -271,9 +279,11 @@ def main():
         if args.recon_loss
         else None
     )
-    domain_head = (
-        nn.Linear(embed_dim, len(domain_manager.names)) if args.domain_loss and domain_manager is not None else None
-    )
+    if args.domain_loss:
+        n_dom = len(domain_manager.names) if domain_manager is not None else len(domain_names)
+        domain_head = nn.Linear(embed_dim, n_dom)
+    else:
+        domain_head = None
 
     params = [model.parameters(), decoder.parameters(), mlm_head.parameters()]
     if caption_dec is not None:
@@ -380,8 +390,11 @@ def main():
             loss_mlm = ce_loss(pred, tokens[mask_txt])
 
             loss_domain = torch.tensor(0.0, device=accelerator.device)
-            if args.domain_loss and domain_head is not None and domain_manager is not None:
-                domain_idx = domain_manager.indices(domains).to(accelerator.device)
+            if args.domain_loss and domain_head is not None:
+                if domain_manager is not None:
+                    domain_idx = domain_manager.indices(domains).to(accelerator.device)
+                else:
+                    domain_idx = torch.tensor([domain_to_idx[d] for d in domains], device=accelerator.device)
                 dom_logits = domain_head(img_emb_base.detach())
                 loss_domain = ce_loss(dom_logits, domain_idx)
                 accelerator.backward(loss_domain)
@@ -530,8 +543,11 @@ def main():
                     loss_rec_val = torch.tensor(0.0, device=accelerator.device)
 
                 loss_dom_val = torch.tensor(0.0, device=accelerator.device)
-                if args.domain_loss and domain_head is not None and domain_manager is not None:
-                    domain_idx = domain_manager.indices(domains).to(accelerator.device)
+                if args.domain_loss and domain_head is not None:
+                    if domain_manager is not None:
+                        domain_idx = domain_manager.indices(domains).to(accelerator.device)
+                    else:
+                        domain_idx = torch.tensor([domain_to_idx[d] for d in domains], device=accelerator.device)
                     dom_logits_val = domain_head(img_emb_base)
                     loss_dom_val = ce_loss(dom_logits_val, domain_idx)
 

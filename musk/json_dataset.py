@@ -45,6 +45,7 @@ class ImageTextJsonDataset(Dataset):
         return_patches: bool = False,
         patch_size: int = 16,
         return_domain: bool = False,
+        return_path: bool = False,
     ) -> None:
         assert mode in {"image", "text", "pair"}
         self.items = _load_json_lines(json_file)
@@ -60,6 +61,7 @@ class ImageTextJsonDataset(Dataset):
         self.return_patches = return_patches
         self.patch_size = patch_size
         self.return_domain = return_domain
+        self.return_path = return_path
         self.domains = sorted({item.get("domain") for item in self.items if item.get("domain") is not None})
         self.domain_to_idx = {d: i for i, d in enumerate(self.domains)}
 
@@ -87,13 +89,21 @@ class ImageTextJsonDataset(Dataset):
 
         if self.mode == "image":
             out = self._load_image(image_path)
+            extras = []
             if self.return_domain:
-                return out, domain
-            return out
+                extras.append(domain)
+            if self.return_path:
+                extras.append(image_path)
+            return (out, *extras) if extras else out
         if self.mode == "text":
             out = self._load_text(caption)
-            if self.return_domain:
-                return out + (domain,)
+            if self.return_domain or self.return_path:
+                extras = []
+                if self.return_domain:
+                    extras.append(domain)
+                if self.return_path:
+                    extras.append(image_path)
+                return out + tuple(extras)
             return out
 
         img = self._load_image(image_path)
@@ -102,9 +112,12 @@ class ImageTextJsonDataset(Dataset):
             out = (img, patches) + self._load_text(caption)
         else:
             out = (img,) + self._load_text(caption)
+        extras = []
         if self.return_domain:
-            return out + (domain,)
-        return out
+            extras.append(domain)
+        if self.return_path:
+            extras.append(image_path)
+        return out + tuple(extras)
 
 
 def get_json_loader(
@@ -116,6 +129,7 @@ def get_json_loader(
     return_patches: bool = False,
     patch_size: int = 16,
     return_domain: bool = False,
+    return_path: bool = False,
 ) -> DataLoader:
     dataset = ImageTextJsonDataset(
         json_file,
@@ -124,6 +138,7 @@ def get_json_loader(
         return_patches=return_patches,
         patch_size=patch_size,
         return_domain=return_domain,
+        return_path=return_path,
     )
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
 
@@ -138,6 +153,7 @@ def get_json_loaders(
     return_patches: bool = False,
     patch_size: int = 16,
     return_domain: bool = False,
+    return_path: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     """Return training and validation loaders split from a JSON lines dataset."""
     dataset = ImageTextJsonDataset(
@@ -147,6 +163,7 @@ def get_json_loaders(
         return_patches=return_patches,
         patch_size=patch_size,
         return_domain=return_domain,
+        return_path=return_path,
     )
     n_val = max(1, int(len(dataset) * val_split))
     n_train = len(dataset) - n_val

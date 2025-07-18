@@ -1,7 +1,8 @@
 import argparse
 import torch
 
-from .json_dataset import get_json_loader
+from torch.utils.data import DataLoader
+from .json_dataset import ImageTextJsonDataset
 from timm.models import create_model
 
 # ensure MUSK models are registered
@@ -35,13 +36,18 @@ def main():
     p.add_argument('--head', required=True, help='Domain head checkpoint')
     args = p.parse_args()
 
-    loader = get_json_loader(args.images, mode='image', batch_size=1, num_workers=2, tokenizer=None, return_domain=True)
+    dataset = ImageTextJsonDataset(args.images, mode='image', return_domain=True, return_path=True)
+    loader = DataLoader(dataset, batch_size=1, num_workers=2)
     model, head, domains, device = load_model_and_head(args.model, args.head)
 
     correct = 0
     total = 0
     with torch.no_grad():
-        for img, dom in loader:
+        for img, dom, path in loader:
+            if isinstance(dom, list):
+                dom = dom[0]
+            if isinstance(path, list):
+                path = path[0]
             img = img.to(device)
             # model returns only a tuple of (vision_cls, language_cls) when
             # return_seq=False and only images are provided
@@ -52,8 +58,10 @@ def main():
                 return_global=True,
                 return_seq=False,
             )
-            pred = head(feat).argmax(dim=-1).item()
-            if dom[0] == domains[pred]:
+            pred_idx = head(feat).argmax(dim=-1).item()
+            pred_dom = domains[pred_idx]
+            print(f"Image: {path} | Ground Truth: {dom} | Predicted: {pred_dom}")
+            if dom == pred_dom:
                 correct += 1
             total += 1
     acc = 100 * correct / total if total else 0

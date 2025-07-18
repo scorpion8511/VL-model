@@ -42,6 +42,8 @@ def main():
 
     correct = 0
     total = 0
+    domain_correct = {d: 0 for d in domains}
+    domain_total = {d: 0 for d in domains}
     with torch.no_grad():
         for img, dom, path in loader:
             if isinstance(dom, (list, tuple)):
@@ -63,11 +65,20 @@ def main():
             pred_idx = head(feat).argmax(dim=-1).item()
             pred_dom = str(domains[pred_idx])
             print(f"Image: {path} | Ground Truth: {dom} | Predicted: {pred_dom}")
+            if dom in domain_total:
+                domain_total[dom] += 1
+                if dom == pred_dom:
+                    domain_correct[dom] += 1
             if dom == pred_dom:
                 correct += 1
             total += 1
     acc = 100 * correct / total if total else 0
     print(f'Accuracy: {acc:.2f}% ({correct}/{total})')
+    for d in domains:
+        tot = domain_total.get(d, 0)
+        cor = domain_correct.get(d, 0)
+        acc_d = 100 * cor / tot if tot else 0
+        print(f"Accuracy for domain '{d}': {acc_d:.2f}% ({cor}/{tot})")
 
 
 if __name__ == '__main__':

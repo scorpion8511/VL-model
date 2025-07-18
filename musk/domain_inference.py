@@ -18,7 +18,10 @@ def load_model_and_head(model_ckpt: str, head_ckpt: str):
     hd = torch.load(head_ckpt, map_location='cpu')
     domains = hd.get('domains')
     head = torch.nn.Linear(embed_dim, len(domains))
-    head.load_state_dict(hd['state_dict'])
+    state = hd['state_dict']
+    if 'module.weight' in state:
+        state = {k.replace('module.', ''): v for k, v in state.items()}
+    head.load_state_dict(state)
 
     model.to(device).eval()
     head.to(device).eval()

@@ -4,6 +4,9 @@ import torch
 from .json_dataset import get_json_loader
 from timm.models import create_model
 
+# ensure MUSK models are registered
+from . import modeling
+
 
 def load_model_and_head(model_ckpt: str, head_ckpt: str):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -7,6 +7,9 @@ from transformers import AutoImageProcessor, AutoModel
 from diffusers.models import AutoencoderKL
 from timm.models import create_model
 
+# register MUSK models with timm
+from . import modeling
+
 
 def load_xray_encoder() -> Tuple[AutoImageProcessor, AutoModel]:
     """Load the pretrained encoder for the x-ray domain using Rad-DINO."""

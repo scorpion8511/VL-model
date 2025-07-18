@@ -59,7 +59,7 @@ enable Mixture-of-Experts layers using `--moe-freq` and `--num-experts`:
 accelerate launch -m musk.pretrain \
        --json-data data.jsonl \
        --moe-freq 4 --num-experts 4 \
-       --domains mri,xray=/path/xray.pth,patho=/path/patho.pth,endo=/path/endo.pth \
+       --domains mri,xray=/path/xray.pth,patho=/path/patho.pth,endo=/path/endo.pth,ultra=/path/ultra.pth \
        --epochs 5 --output musk_pretrained.pt --domain-loss
 ```
 
@@ -72,7 +72,7 @@ After stage one run contrastive pretraining:
 accelerate launch --mixed_precision fp16 -m musk.contrastive_pretrain \
        --batch-size 16 --epochs 20 --output musk_stage2.pt \
        --encoder musk_pretrained_encoder.pt \
-       --domains mri,xray=/path/xray.pth,patho=/path/patho.pth,endo=/path/endo.pth \
+       --domains mri,xray=/path/xray.pth,patho=/path/patho.pth,endo=/path/endo.pth,ultra=/path/ultra.pth \
        --domain-loss --domain-head musk_pretrained.pt.domain_head.pth
 ```
 

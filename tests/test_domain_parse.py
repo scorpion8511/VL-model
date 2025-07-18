@@ -8,3 +8,8 @@ def test_parse_single_string():
 def test_parse_tokens_with_spaces():
     tokens = ["xray=", "/x.pth,", "patho=", "/p.pth"]
     assert parse_domain_list(tokens) == ["xray=/x.pth", "patho=/p.pth"]
+
+
+def test_parse_with_ultrasound():
+    arg = "xray=/x.pth,ultra=/u.pth,patho=/p.pth"
+    assert parse_domain_list(arg) == ["xray=/x.pth", "ultra=/u.pth", "patho=/p.pth"]

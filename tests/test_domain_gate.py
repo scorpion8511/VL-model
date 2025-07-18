@@ -88,3 +88,33 @@ def test_domain_encoder_manager_four_domains():
     assert feats[3, 0] == 3
     DOMAIN_ENCODERS.clear()
     DOMAIN_ENCODERS.update(original)
+
+
+def test_domain_encoder_manager_five_domains():
+    original = DOMAIN_ENCODERS.copy()
+
+    class Dummy(nn.Module):
+        def __init__(self, val: int):
+            super().__init__()
+            self.val = val
+
+        def forward(self, x):
+            return (torch.full((x.size(0), 1), self.val),)
+
+    DOMAIN_ENCODERS.clear()
+    DOMAIN_ENCODERS["xray"] = lambda: (None, Dummy(1))
+    DOMAIN_ENCODERS["mri"] = lambda: (None, Dummy(2))
+    DOMAIN_ENCODERS["patho"] = lambda: (None, Dummy(3))
+    DOMAIN_ENCODERS["endo"] = lambda: (None, Dummy(4))
+    DOMAIN_ENCODERS["ultra"] = lambda: (None, Dummy(5))
+    mgr = DomainEncoderManager(["xray", "mri", "patho", "endo", "ultra"])
+    imgs = torch.zeros(5, 3, 2, 2)
+    feats = mgr(imgs, ["ultra", "endo", "mri", "xray", "patho"])
+    assert feats.shape == (5, 1)
+    assert feats[0, 0] == 5
+    assert feats[1, 0] == 4
+    assert feats[2, 0] == 2
+    assert feats[3, 0] == 1
+    assert feats[4, 0] == 3
+    DOMAIN_ENCODERS.clear()
+    DOMAIN_ENCODERS.update(original)

@@ -35,6 +35,7 @@ from timm.models import create_model
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from transformers import XLMRobertaTokenizer
+from .domain_encoders import get_domain_encoder, load_domain_encoders, parse_domain_list
 from .utils import xlm_tokenizer
 from . import modeling  # ensure custom models are registered
 
@@ -88,6 +89,54 @@ def get_args():
         default=None,
         help="Optional path to save only the encoder weights for stage-two training",
     )
+    parser.add_argument(
+        "--encoder",
+        type=str,
+        default=None,
+        help="Optional path to pretrained encoder weights to initialize stage one",
+    )
+    parser.add_argument(
+        "--domain",
+        type=str,
+        default=None,
+        help="Name of domain-specific encoder to initialize the model",
+    )
+    parser.add_argument(
+        "--domains",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Comma-separated list of additional domain encoders for distillation",
+    )
+    parser.add_argument(
+        "--domain-head",
+        type=str,
+        default=None,
+        help="Path to a pretrained domain classification head to continue training",
+    )
+    parser.add_argument(
+        "--domain-loss",
+        action="store_true",
+        help="Enable domain classification loss using dataset domain labels",
+    )
+    parser.add_argument(
+        "--distill-weight",
+        type=float,
+        default=1.0,
+        help="Weight for distillation loss from domain encoders",
+    )
+    parser.add_argument(
+        "--moe-freq",
+        type=int,
+        default=0,
+        help="Insert a mixture-of-experts layer every N transformer blocks",
+    )
+    parser.add_argument(
+        "--num-experts",
+        type=int,
+        default=0,
+        help="Number of experts to use in MoE layers",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     return parser.parse_args()
 
@@ -101,6 +150,13 @@ def main():
     run = None
     if args.wandb_project and accelerator.is_main_process:
         run = wandb.init(project=args.wandb_project)
+
+    domain_manager = None
+    domain_list = []
+    if args.domains:
+        if not args.json_data:
+            raise ValueError("--domains requires --json-data dataset with domain field")
+        domain_list = parse_domain_list(args.domains)
 
     if not args.json_data and not (args.image_data and args.text_data):
         raise ValueError("Provide --json-data or both --image-data and --text-data")
@@ -119,6 +175,7 @@ def main():
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             tokenizer=None,
+            return_domain=bool(domain_list) or args.domain_loss,
         )
         (
             text_loader,
@@ -129,6 +186,7 @@ def main():
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             tokenizer=tokenizer,
+            return_domain=False,
         )
     else:
         image_loader = get_image_loader(args.image_data, args.batch_size, args.num_workers)
@@ -136,22 +194,78 @@ def main():
         val_image_loader = None
         val_text_loader = None
 
-    model = create_model("musk_large_patch16_384")
+    model = create_model(
+        "musk_large_patch16_384",
+        moe_freq=args.moe_freq,
+        moe_expert_count=args.num_experts,
+    )
+    if args.domain:
+        try:
+            _, domain_model = get_domain_encoder(args.domain)
+            state = domain_model.state_dict()
+            missing = model.beit3.load_state_dict(state, strict=False)
+            accelerator.print(f"Initialized encoder from domain '{args.domain}'")
+            if missing.missing_keys:
+                accelerator.print(
+                    f"Missing keys when loading domain encoder: {missing.missing_keys}"
+                )
+        except Exception as e:
+            accelerator.print(f"Failed to load domain encoder '{args.domain}': {e}")
+    if args.encoder:
+        state = torch.load(args.encoder, map_location="cpu")
+        missing = model.beit3.load_state_dict(state, strict=False)
+        accelerator.print(f"Loaded encoder weights from {args.encoder}")
+        if missing.missing_keys:
+            accelerator.print(f"Missing keys in encoder load: {missing.missing_keys}")
     unwrapped = accelerator.unwrap_model(model)
     embed_dim = unwrapped.beit3.args.encoder_embed_dim
     patch_size = unwrapped.beit3.args.patch_size
+    if domain_list:
+        domain_manager = load_domain_encoders(domain_list, out_dim=embed_dim)
+        domain_manager = domain_manager.to(accelerator.device)
+        domain_manager.eval()
+        accelerator.print(f"Loaded domain encoders: {', '.join(domain_list)}")
+    domain_head = None
+    domain_names: list[str] = []
+    if args.domain_loss or args.domain_head:
+        ds = image_loader.dataset
+        if isinstance(ds, torch.utils.data.Subset):
+            ds = ds.dataset
+        dataset_domains = getattr(ds, "domains", [])
+        if domain_manager is not None:
+            dataset_domains = domain_manager.names
+        if args.domain_head:
+            state = torch.load(args.domain_head, map_location="cpu")
+            domain_names = state.get("domains", dataset_domains)
+            domain_head = torch.nn.Linear(embed_dim, len(domain_names))
+            domain_head.load_state_dict(state["state_dict"], strict=False)
+        elif args.domain_loss:
+            domain_names = dataset_domains
+            if not domain_names:
+                raise ValueError("--domain-loss requires domain labels in dataset")
+            domain_head = torch.nn.Linear(embed_dim, len(domain_names))
     img_decoder = torch.nn.Linear(embed_dim, 3 * patch_size * patch_size)
     txt_decoder = torch.nn.Linear(embed_dim, len(tokenizer))
 
-    optimizer = torch.optim.AdamW(
-        itertools.chain(model.parameters(), img_decoder.parameters(), txt_decoder.parameters()),
-        lr=args.lr,
-    )
+    params = [model.parameters(), img_decoder.parameters(), txt_decoder.parameters()]
+    if domain_head is not None:
+        params.append(domain_head.parameters())
+    optimizer = torch.optim.AdamW(itertools.chain(*params), lr=args.lr)
 
-    components = accelerator.prepare(
-        model, img_decoder, txt_decoder, optimizer, image_loader, text_loader
-    )
-    model, img_decoder, txt_decoder, optimizer, image_loader, text_loader = components
+    modules = [model, img_decoder, txt_decoder]
+    if domain_head is not None:
+        modules.append(domain_head)
+    modules += [optimizer, image_loader, text_loader]
+    prepared = accelerator.prepare(*modules)
+    ptr = 0
+    model = prepared[ptr]; ptr += 1
+    img_decoder = prepared[ptr]; ptr += 1
+    txt_decoder = prepared[ptr]; ptr += 1
+    if domain_head is not None:
+        domain_head = prepared[ptr]; ptr += 1
+    optimizer = prepared[ptr]; ptr += 1
+    image_loader = prepared[ptr]; ptr += 1
+    text_loader = prepared[ptr]
     if val_image_loader is not None:
         val_image_loader = accelerator.prepare(val_image_loader)
         val_text_loader = accelerator.prepare(val_text_loader)
@@ -163,8 +277,13 @@ def main():
     for epoch in range(args.epochs):
         mim_loss_epoch = 0.0
         mlm_loss_epoch = 0.0
+        dom_loss_epoch = 0.0
         num_batches = 0
-        for images, (tokens, padding) in zip(image_loader, text_loader):
+        for img_data, (tokens, padding) in zip(image_loader, text_loader):
+            if domain_manager is not None:
+                images, domains = img_data
+            else:
+                images = img_data
             optimizer.zero_grad()
 
             # ----- Masked Image Modeling -----
@@ -172,19 +291,35 @@ def main():
             num_patches = (H // patch_size) * (W // patch_size)
             mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
             with accelerator.no_sync(model):
-                _, _, img_seq, _ = model(
+                img_cls, _, img_seq, _ = model(
                     image=images,
                     vision_mask=mask_img,
                     with_head=False,
                     out_norm=False,
-                    return_global=False,
+                    return_global=domain_manager is not None,
                     return_seq=True,
                 )
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
                 loss_img = mse_loss(pred, target)
-                accelerator.backward(loss_img)
+                if domain_manager is not None:
+                    with torch.no_grad():
+                        teach = domain_manager(images, list(domains)).to(images.device)
+                    loss_img = loss_img + args.distill_weight * mse_loss(img_cls, teach)
+
+                loss = loss_img
+
+                if args.domain_loss and domain_head is not None:
+                    dom_idx = torch.tensor([domain_names.index(d) if d in domain_names else -1 for d in domains], device=images.device)
+                    valid = dom_idx >= 0
+                    if valid.any():
+                        dom_pred = domain_head(img_cls[valid])
+                        loss_dom = ce_loss(dom_pred, dom_idx[valid])
+                        loss = loss + loss_dom
+                        dom_loss_epoch += loss_dom.item()
+
+                accelerator.backward(loss)
 
             # ----- Masked Language Modeling -----
             tokens = tokens.to(images.device)
@@ -213,31 +348,44 @@ def main():
         denom = accelerator.reduce(torch.tensor(num_batches, device=accelerator.device), reduction="sum")
         mim_total = accelerator.reduce(torch.tensor(mim_loss_epoch, device=accelerator.device), reduction="sum")
         mlm_total = accelerator.reduce(torch.tensor(mlm_loss_epoch, device=accelerator.device), reduction="sum")
+        if args.domain_loss:
+            dom_total = accelerator.reduce(torch.tensor(dom_loss_epoch, device=accelerator.device), reduction="sum")
 
         mim_avg = (mim_total / denom).item()
         mlm_avg = (mlm_total / denom).item()
+        if args.domain_loss:
+            dom_avg = (dom_total / denom).item()
 
         if val_image_loader is not None:
             val_mim = 0.0
             val_mlm = 0.0
+            val_dom = 0.0
             val_batches = 0
-            for images, (tokens, padding) in zip(val_image_loader, val_text_loader):
+            for img_data, (tokens, padding) in zip(val_image_loader, val_text_loader):
+                if domain_manager is not None:
+                    images, domains = img_data
+                else:
+                    images = img_data
                 B, _, H, W = images.shape
                 num_patches = (H // patch_size) * (W // patch_size)
                 mask_img = random_mask((B, num_patches), args.mask_ratio, images.device)
                 with torch.no_grad():
-                    _, _, img_seq, _ = model(
+                    img_cls, _, img_seq, _ = model(
                         image=images,
                         vision_mask=mask_img,
                         with_head=False,
                         out_norm=False,
-                        return_global=False,
+                        return_global=domain_manager is not None,
                         return_seq=True,
                     )
                 patches = F.unfold(images, kernel_size=patch_size, stride=patch_size).transpose(1, 2)
                 target = patches[mask_img]
                 pred = img_decoder(img_seq[mask_img])
                 loss_img = mse_loss(pred, target)
+                if domain_manager is not None:
+                    with torch.no_grad():
+                        teach = domain_manager(images, list(domains)).to(images.device)
+                    loss_img = loss_img + args.distill_weight * mse_loss(img_cls, teach)
 
                 tokens = tokens.to(images.device)
                 padding = padding.to(images.device)
@@ -256,6 +404,15 @@ def main():
                 pred_txt = txt_decoder(txt_seq[mask_txt])
                 loss_txt = ce_loss(pred_txt, tokens[mask_txt])
 
+                if args.domain_loss and domain_head is not None:
+                    dom_idx = torch.tensor([domain_names.index(d) if d in domain_names else -1 for d in domains], device=images.device)
+                    valid = dom_idx >= 0
+                    if valid.any():
+                        with torch.no_grad():
+                            pred_dom = domain_head(img_cls[valid])
+                            loss_dom = ce_loss(pred_dom, dom_idx[valid])
+                        val_dom += loss_dom.item()
+
                 val_mim += loss_img.item()
                 val_mlm += loss_txt.item()
                 val_batches += 1
@@ -265,27 +422,38 @@ def main():
             val_mlm_total = accelerator.reduce(torch.tensor(val_mlm, device=accelerator.device), reduction="sum")
             mim_val_avg = (val_mim_total / val_denom).item()
             mlm_val_avg = (val_mlm_total / val_denom).item()
-            accelerator.print(
-                f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f} Val_MIM={mim_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
-            )
+            if args.domain_loss:
+                val_dom_total = accelerator.reduce(torch.tensor(val_dom, device=accelerator.device), reduction="sum")
+                dom_val_avg = (val_dom_total / val_denom).item()
+            msg = f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f} Val_MIM={mim_val_avg:.4f} Val_MLM={mlm_val_avg:.4f}"
+            if args.domain_loss:
+                msg += f" Val_DOM={dom_val_avg:.4f}"
+            accelerator.print(msg)
             if run:
                 run.log(
                     {
                         "epoch": epoch + 1,
                         "train_mim": mim_avg,
                         "train_mlm": mlm_avg,
+                        **({"train_dom": dom_avg} if args.domain_loss else {}),
                         "val_mim": mim_val_avg,
                         "val_mlm": mlm_val_avg,
+                        **({"val_dom": dom_val_avg} if args.domain_loss else {})
                     }
                 )
         else:
-            accelerator.print(f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}")
+            msg = f"Epoch {epoch + 1}: MIM={mim_avg:.4f} MLM={mlm_avg:.4f}"
+            if args.domain_loss:
+                avg_dom = dom_loss_epoch / denom.item()
+                msg += f" DOM={avg_dom:.4f}"
+            accelerator.print(msg)
             if run:
                 run.log(
                     {
                         "epoch": epoch + 1,
                         "train_mim": mim_avg,
                         "train_mlm": mlm_avg,
+                        **({"train_dom": dom_loss_epoch / denom.item()} if args.domain_loss else {}),
                     }
                 )
 
@@ -296,6 +464,9 @@ def main():
         if args.encoder_out:
             accelerator.print(f"Saving encoder weights to {args.encoder_out}")
             torch.save(base_model.beit3.state_dict(), args.encoder_out)
+        if args.domain_loss and domain_head is not None:
+            torch.save({"state_dict": domain_head.state_dict(), "domains": domain_names},
+                       args.output + ".domain_head.pth")
         if run:
             run.finish()
 

@@ -43,7 +43,15 @@ def main():
     with torch.no_grad():
         for img, dom in loader:
             img = img.to(device)
-            feat, _, _, _ = model(image=img, with_head=False, out_norm=False, return_global=True, return_seq=False)
+            # model returns only a tuple of (vision_cls, language_cls) when
+            # return_seq=False and only images are provided
+            feat, _ = model(
+                image=img,
+                with_head=False,
+                out_norm=False,
+                return_global=True,
+                return_seq=False,
+            )
             pred = head(feat).argmax(dim=-1).item()
             if dom[0] == domains[pred]:
                 correct += 1

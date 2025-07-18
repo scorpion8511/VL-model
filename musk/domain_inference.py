@@ -44,10 +44,12 @@ def main():
     total = 0
     with torch.no_grad():
         for img, dom, path in loader:
-            if isinstance(dom, list):
+            if isinstance(dom, (list, tuple)):
                 dom = dom[0]
-            if isinstance(path, list):
+            dom = str(dom)
+            if isinstance(path, (list, tuple)):
                 path = path[0]
+            path = str(path)
             img = img.to(device)
             # model returns only a tuple of (vision_cls, language_cls) when
             # return_seq=False and only images are provided
@@ -59,7 +61,7 @@ def main():
                 return_seq=False,
             )
             pred_idx = head(feat).argmax(dim=-1).item()
-            pred_dom = domains[pred_idx]
+            pred_dom = str(domains[pred_idx])
             print(f"Image: {path} | Ground Truth: {dom} | Predicted: {pred_dom}")
             if dom == pred_dom:
                 correct += 1
